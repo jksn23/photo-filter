@@ -63,8 +63,11 @@ def compute_final_score(
     """Compute mode-aware final score from nested score models."""
     config = MODE_CONFIG.get(mode, MODE_CONFIG["balanced"])
     face_weight = config.face_score_weight
-    body_weight = config.body_score_weight
+    body_weight = 0.30 if mode in {"balanced", "aggressive"} else config.body_score_weight
     technical_weight = config.technical_score_weight
+    body_value = body.subject_score
+    if body_value == 0.0 and (body.body_sharpness or body.body_blur_penalty):
+        body_value = max(0.0, min(1.0, body.body_sharpness - body.body_blur_penalty * 0.35))
     body_penalty_weight = 0.2
     blur_penalty_weight = 0.15
     if mode == "conservative":
@@ -79,7 +82,7 @@ def compute_final_score(
         + 0.20 * technical.exposure
         + 0.10 * technical.contrast
         + face_weight * face.face_score
-        + body_weight * body.subject_score
+        + body_weight * body_value
         - blur_penalty_weight * technical.global_blur_penalty
         - body_penalty_weight * body.body_blur_penalty
     )

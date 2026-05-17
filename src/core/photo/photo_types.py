@@ -100,6 +100,7 @@ class PhotoItem:
     path: Path | str
     file_name: str
     filename: str | None = None
+    output_path: str | None = None
     thumbnail_path: str | None = None
     width: int | None = None
     height: int | None = None

@@ -45,10 +45,17 @@ CSV_COLUMNS = [
     "contrast_score",
     "blur_penalty",
     "face_score",
+    "face_sharpness_score",
     "body_sharpness_score",
     "body_blur_penalty",
+    "subject_score",
     "aesthetic_score",
     "culling_mode",
+    "selected_photo_id",
+    "score_percent",
+    "subject_detected",
+    "cluster_winner_filename",
+    "score_gap_from_winner",
 ]
 
 ANALYSIS_CSV_COLUMNS = [
@@ -175,4 +182,5 @@ def generate_summary(df) -> dict:
         "overexposed_photos": int((df["exposure_status"].str.upper() == OVEREXPOSED).sum()),
         "duplicate_groups": int(duplicate_groups.nunique()),
         "localized_person_blur_photos": int(df.get("localized_person_blur", pd.Series(dtype=bool)).fillna(False).sum()),
+        "average_final_score": round(float(df["final_score"].mean()), 2),
     }

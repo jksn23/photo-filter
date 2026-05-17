@@ -364,9 +364,15 @@ def sidebar_controls() -> dict:
     use_faces = st.sidebar.checkbox("Gunakan deteksi wajah", value=True, key="use_faces")
     use_duplicates = st.sidebar.checkbox("Gunakan deteksi duplikat", value=True, key="use_duplicates")
     use_human_aware = st.sidebar.checkbox(
-        "Enable Human-Aware Blur Detection",
+        "Gunakan body/subject blur heuristic",
         value=True,
         key="use_human_aware",
+    )
+    enable_person_detection = st.sidebar.checkbox(
+        "Aktifkan person detector opsional",
+        value=False,
+        key="enable_person_detection",
+        help="Aman dimatikan. Jika tidak ada detector eksternal, CullaGrace memakai fallback heuristic lokal.",
     )
     person_confidence = st.sidebar.number_input(
         "Person Detection Confidence",
@@ -408,6 +414,7 @@ def sidebar_controls() -> dict:
             "use_faces",
             "use_duplicates",
             "use_human_aware",
+            "enable_person_detection",
             "person_confidence",
             "person_patch_blur_threshold",
             "localized_blur_patch_ratio",
@@ -431,6 +438,7 @@ def sidebar_controls() -> dict:
         "use_face_detection": use_faces,
         "use_duplicate_detection": use_duplicates,
         "use_human_aware_detection": use_human_aware,
+        "enable_person_detection": enable_person_detection,
         "person_detection_confidence": person_confidence,
         "person_patch_blur_threshold": person_patch_blur_threshold,
         "localized_blur_patch_ratio": localized_blur_patch_ratio,
@@ -554,9 +562,8 @@ def render_process_panel(config: dict) -> None:
             f"Exposure threshold: **{config['underexposed_threshold']} - {config['overexposed_threshold']}**"
         )
         st.write(f"Duplicate threshold: **{config['duplicate_hash_threshold']}**")
-        st.write(
-            f"Skor: Selected >= **{config['selected_score_min']}**, Review >= **{config['review_score_min']}**"
-        )
+        st.write(f"Mode culling: **{config['culling_mode']}**")
+        st.write(f"Body blur heuristic: **{_format_bool(config['use_human_aware_detection'])}**")
 
     if status != "success":
         if status == "warning":
@@ -646,11 +653,10 @@ def render_stat_grid(summary: dict) -> None:
         ("Selected", summary.get("selected", 0)),
         ("Review", summary.get("review", 0)),
         ("Rejected", summary.get("rejected", 0)),
+        ("Clusters", summary.get("cluster_count", summary.get("duplicate_groups", 0))),
+        ("Average Final Score", summary.get("average_final_score", 0.0)),
+        ("Body Blur Warnings", summary.get("localized_person_blur_photos", 0)),
         ("Blur Photos", summary.get("blur_photos", 0)),
-        ("Underexposed Photos", summary.get("underexposed_photos", 0)),
-        ("Overexposed Photos", summary.get("overexposed_photos", 0)),
-        ("Duplicate Groups", summary.get("duplicate_groups", 0)),
-        ("Localized Person Blur", summary.get("localized_person_blur_photos", 0)),
     ]
     for row in range(0, len(metrics), 4):
         columns = st.columns(4)
@@ -658,24 +664,89 @@ def render_stat_grid(summary: dict) -> None:
             column.metric(label, value)
 
 
-def render_status_breakdown_tabs(df: pd.DataFrame, display_columns: list[str]) -> None:
-    """Render grouped results for fast selected/review/rejected inspection."""
-    st.markdown("### Breakdown Keputusan")
-    selected_tab, review_tab, rejected_tab = st.tabs(["Selected", "Review", "Rejected"])
-    tab_specs = [
-        (selected_tab, "SELECTED", "Foto prioritas untuk dipakai."),
-        (review_tab, "REVIEW", "Foto yang perlu dicek manual."),
-        (rejected_tab, "REJECTED", "Foto yang tidak direkomendasikan."),
-    ]
-    for tab, status, empty_message in tab_specs:
-        with tab:
-            subset = df[df["output_status"] == status].copy()
-            if subset.empty:
-                st.caption(empty_message)
-                st.dataframe(subset[display_columns], use_container_width=True, hide_index=True)
-                continue
-            st.caption(f"{len(subset)} foto")
-            st.dataframe(subset[display_columns], use_container_width=True, hide_index=True)
+def _format_bool(value) -> str:
+    return "Ya" if bool(value) else "Tidak"
+
+
+def render_photo_detail_list(df: pd.DataFrame) -> None:
+    """Render explainable per-photo details."""
+    if df.empty:
+        st.info("Tidak ada foto pada kategori ini.")
+        return
+    for _, row in df.sort_values("final_score", ascending=False).iterrows():
+        title = f"{row.get('filename')} - {row.get('output_status')} - {row.get('final_score')}"
+        with st.expander(title):
+            image_path = row.get("thumbnail_path") or row.get("output_path") or row.get("original_path")
+            left, right = st.columns([1, 2])
+            with left:
+                if image_path and Path(str(image_path)).exists():
+                    st.image(str(image_path), use_container_width=True)
+                st.write(f"Cluster: `{row.get('duplicate_group_id') or 'unique'}`")
+                st.write(f"Cluster winner: **{_format_bool(row.get('is_best_duplicate'))}**")
+                if row.get("cluster_winner_filename"):
+                    st.write(f"Winner: `{row.get('cluster_winner_filename')}`")
+                if pd.notna(row.get("score_gap_from_winner")):
+                    st.write(f"Gap dari winner: `{row.get('score_gap_from_winner')}`")
+            with right:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Final", row.get("final_score", 0))
+                c2.metric("Technical", row.get("technical_score", 0))
+                c3.metric("Body Penalty", row.get("body_blur_penalty", 0))
+                st.write(
+                    {
+                        "technical": {
+                            "sharpness": row.get("sharpness_score"),
+                            "exposure": row.get("exposure_score"),
+                            "contrast": row.get("contrast_score"),
+                            "global_blur_penalty": row.get("blur_penalty"),
+                        },
+                        "face": {
+                            "detected": bool(row.get("has_face")),
+                            "count": row.get("face_count"),
+                            "face_sharpness": row.get("face_sharpness_score"),
+                            "face_score": row.get("face_score"),
+                        },
+                        "body_subject": {
+                            "detected": bool(row.get("subject_detected")),
+                            "body_sharpness": row.get("body_sharpness_score"),
+                            "body_blur_penalty": row.get("body_blur_penalty"),
+                            "subject_score": row.get("subject_score"),
+                        },
+                    }
+                )
+                st.write("Reasons:")
+                reason_text = str(row.get("final_reason") or row.get("notes") or "")
+                for reason in [part.strip() for part in reason_text.split(";") if part.strip()]:
+                    st.write(f"- {reason}")
+
+
+def render_cluster_view(df: pd.DataFrame) -> None:
+    """Render cluster comparison with winner and alternatives."""
+    clusters = df[df["duplicate_group_id"].notna()].copy()
+    if clusters.empty:
+        st.info("Belum ada cluster foto mirip pada hasil filter ini.")
+        return
+    for cluster_id, group in clusters.groupby("duplicate_group_id"):
+        sorted_group = group.sort_values(["is_best_duplicate", "final_score"], ascending=[False, False])
+        winner = sorted_group.iloc[0]
+        with st.expander(f"Cluster {cluster_id} - Winner: {winner.get('filename')}"):
+            st.write(f"Reason: {winner.get('final_reason') or 'Highest final score in cluster.'}")
+            rows = []
+            winner_score = float(winner.get("final_score") or 0)
+            for _, row in sorted_group.iterrows():
+                rows.append(
+                    {
+                        "filename": row.get("filename"),
+                        "status": row.get("output_status"),
+                        "winner": bool(row.get("is_best_duplicate")),
+                        "final_score": row.get("final_score"),
+                        "score_gap": round(max(0.0, winner_score - float(row.get("final_score") or 0)), 2),
+                        "body_blur_penalty": row.get("body_blur_penalty"),
+                        "face_score": row.get("face_score"),
+                        "reasons": row.get("final_reason"),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def render_results() -> None:
@@ -746,41 +817,41 @@ def render_results() -> None:
         "main_person_blur_score",
         "body_sharpness_score",
         "body_blur_penalty",
+        "subject_score",
         "localized_person_blur",
         "face_count",
         "face_score",
+        "face_sharpness_score",
         "duplicate_group",
         "duplicate_quality_rank",
         "is_best_duplicate",
+        "selected_photo_id",
+        "cluster_winner_filename",
+        "score_gap_from_winner",
         "culling_mode",
         "final_reason",
     ]
     display_columns = [column for column in display_columns if column in filtered.columns]
-    breakdown_columns = [
-        column
-        for column in [
-            "filename",
-            "final_score",
-            "technical_score",
-            "sharpness_score",
-            "exposure_score",
-            "contrast_score",
-            "face_score",
-            "body_sharpness_score",
-            "body_blur_penalty",
-            "duplicate_group",
-            "is_best_duplicate",
-            "final_reason",
-        ]
-        if column in filtered.columns
-    ]
-    render_status_breakdown_tabs(filtered, breakdown_columns)
-
-    view_mode = st.radio("Tampilan", ["Tabel", "Galeri"], horizontal=True)
-    if view_mode == "Tabel":
-        st.dataframe(filtered[display_columns], use_container_width=True, hide_index=True)
-    else:
-        render_gallery(filtered)
+    st.info(
+        "Human/body blur detection saat ini berbasis heuristic dan perlu dicek manual, terutama untuk foto banyak orang atau subjek tidak di tengah."
+    )
+    selected_tab, review_tab, rejected_tab, clusters_tab, audit_tab = st.tabs(
+        ["Selected", "Review", "Rejected", "Clusters", "Report / Audit"]
+    )
+    with selected_tab:
+        render_photo_detail_list(filtered[filtered["output_status"] == "SELECTED"])
+    with review_tab:
+        render_photo_detail_list(filtered[filtered["output_status"] == "REVIEW"])
+    with rejected_tab:
+        render_photo_detail_list(filtered[filtered["output_status"] == "REJECTED"])
+    with clusters_tab:
+        render_cluster_view(filtered)
+    with audit_tab:
+        view_mode = st.radio("Tampilan audit", ["Tabel", "Galeri"], horizontal=True)
+        if view_mode == "Tabel":
+            st.dataframe(filtered[display_columns], use_container_width=True, hide_index=True)
+        else:
+            render_gallery(filtered)
 
     output_folder = summary.get("output_folder", "")
     report_path = summary.get("report_path", "")

@@ -39,10 +39,17 @@ class PhotoAnalysisResult:
     contrast_score: float = 0.0
     blur_penalty: float = 0.0
     face_score: float | None = None
+    face_sharpness_score: float | None = None
     body_sharpness_score: float | None = None
     body_blur_penalty: float | None = None
+    subject_score: float | None = None
     aesthetic_score: float | None = None
     culling_mode: str = "balanced"
+    selected_photo_id: str | None = None
+    score_percent: float | None = None
+    subject_detected: bool = False
+    cluster_winner_filename: str | None = None
+    score_gap_from_winner: float | None = None
 
     def to_dict(self) -> dict:
         """Convert the result to a serializable dictionary."""

@@ -55,13 +55,19 @@ def analyze_photo_item(
     item: PhotoItem,
     cache_root: Path | None = None,
     enable_body_scoring: bool = True,
+    enable_person_detection: bool = False,
     mode: CullingMode = "balanced",
 ) -> PhotoItem:
     """Analyze one photo and attach normalized scores and thumbnail path."""
     image_path = Path(item.path)
     item.thumbnail_path = str(build_thumbnail(image_path, cache_root))
     cached = load_analysis_cache(image_path, cache_root)
-    if cached and "score" in cached and cached.get("enable_body_scoring") == enable_body_scoring:
+    if (
+        cached
+        and "score" in cached
+        and cached.get("enable_body_scoring") == enable_body_scoring
+        and cached.get("enable_person_detection") == enable_person_detection
+    ):
         score_payload = cached["score"]
         technical = TechnicalScore(**score_payload["technical"])
         face = FaceScore(**score_payload["face"])
@@ -81,7 +87,11 @@ def analyze_photo_item(
     technical = compute_technical_score(image)
     face_regions = detect_face_regions(image)
     face = analyze_face(image)
-    body = analyze_person_body_blur(image, face_regions) if enable_body_scoring else BodyScore(subject_score=0.45)
+    body = (
+        analyze_person_body_blur(image, face_regions, enable_person_detection=enable_person_detection)
+        if enable_body_scoring
+        else BodyScore(subject_score=0.45)
+    )
     final = compute_final_score(technical, face, body, mode=mode)
     item.score = PhotoScore(
         technical=technical,
@@ -103,6 +113,7 @@ def analyze_photo_item(
         image_path,
         {
             "enable_body_scoring": enable_body_scoring,
+            "enable_person_detection": enable_person_detection,
             "score": {
                 "technical": technical.__dict__,
                 "face": face.__dict__,
@@ -136,6 +147,7 @@ def run_culling_engine(
     similarity_threshold: int = 8,
     cache_root: Path | None = None,
     enable_body_scoring: bool = True,
+    enable_person_detection: bool = False,
 ) -> list[PhotoItem]:
     """Run import, analysis, clustering, picking, export, and reports."""
     input_path = normalize_user_path(input_dir)
@@ -148,7 +160,14 @@ def run_culling_engine(
     paths = scan_image_paths(input_path, recursive=recursive)
     items = [_photo_item_from_path(path) for path in paths]
     for item in items:
-        analyze_photo_item(item, cache_root=cache_root, enable_body_scoring=enable_body_scoring, mode=mode)
+        item.metadata_dict["mode"] = mode
+        analyze_photo_item(
+            item,
+            cache_root=cache_root,
+            enable_body_scoring=enable_body_scoring,
+            enable_person_detection=enable_person_detection,
+            mode=mode,
+        )
 
     clusters = build_similarity_clusters(items, threshold=similarity_threshold)
     pick_best_photos(clusters, mode=mode, keep_per_cluster=3 if mode == "conservative" else 1)
@@ -157,7 +176,7 @@ def run_culling_engine(
         export_photos(items, output_path)
     report_dir = output_path / "04_REPORT"
     write_csv_report(items, report_dir)
-    write_json_report(items, report_dir)
+    write_json_report(items, report_dir, clusters=clusters, mode=mode)
     return items
 
 
@@ -167,6 +186,7 @@ def run_core_culling_engine(
     similarity_threshold: int = 8,
     cache_root: Path | None = None,
     enable_body_scoring: bool = True,
+    enable_person_detection: bool = False,
 ) -> CullingResult:
     """Compatibility result wrapper around run_culling_engine."""
     _ = enable_body_scoring
@@ -179,6 +199,7 @@ def run_core_culling_engine(
         similarity_threshold=similarity_threshold,
         cache_root=cache_root,
         enable_body_scoring=enable_body_scoring,
+        enable_person_detection=enable_person_detection,
     )
     clusters = build_similarity_clusters(items, threshold=similarity_threshold)
     selected = [item for item in items if item.status == "selected"]

@@ -46,7 +46,7 @@ streamlit run app.py
 1. Jalankan aplikasi dengan `streamlit run app.py`.
 2. Masukkan path folder foto pada sidebar.
 3. Jika perlu, isi folder output. Jika dikosongkan, aplikasi membuat folder `<nama_folder>_CULLED` di dalam folder input.
-4. Atur threshold sesuai kebutuhan.
+4. Atur mode culling dan opsi proses sesuai kebutuhan.
 5. Klik **Mulai Culling**.
 6. Setelah selesai, buka folder output dan review folder Selected serta Review.
 
@@ -67,33 +67,37 @@ Secara default, aplikasi membuat struktur berikut:
 
 Jika file tidak bisa dibaca atau gagal disalin, statusnya dicatat sebagai `ERROR` di laporan.
 
-## Penjelasan Threshold
+## Scoring dan Keputusan
 
-- **Blur Threshold**: nilai lebih tinggi berarti penilaian ketajaman lebih ketat. Default 100.
-- **Underexposed Threshold**: brightness di bawah nilai ini dianggap terlalu gelap. Default 50.
-- **Overexposed Threshold**: brightness di atas nilai ini dianggap terlalu terang. Default 210.
-- **Duplicate Hash Threshold**: nilai lebih kecil berarti pencocokan duplikat lebih ketat. Default 8.
-- **Human-Aware Blur Detection**: memakai analisis kontur/region OpenCV sebagai heuristik lokal untuk menilai blur pada area subjek manusia.
-- **Mode Culling**: `conservative` menyimpan kandidat dekat, `balanced` adalah default, `aggressive` memilih satu pemenang per grup mirip.
-- **Selected Score Minimum**: skor minimum agar foto masuk Selected. Default 80.
-- **Review Score Minimum**: skor minimum agar foto masuk Review. Default 50.
+CullaGrace memakai scoring ternormalisasi 0.0 sampai 1.0 di engine inti. UI dan CSV dapat menampilkan `final_score` sebagai persentase agar lebih mudah dibaca.
 
-## Aturan Scoring
+Sub-score utama:
 
-Skor dasar adalah 100.
+- `technical.sharpness`
+- `technical.exposure`
+- `technical.contrast`
+- `technical.global_blur_penalty`
+- `face.face_score`
+- `body.subject_score`
+- `body.body_blur_penalty`
+- `final_score`
 
-- Blur: -40
-- Underexposed atau overexposed: -25
-- Tidak ada wajah: -10
-- Ada wajah: +15
-- Duplikat non-terbaik: -30
-- Duplikat terbaik dalam grup: +10
+Alur keputusan:
 
-Klasifikasi default:
+1. Menganalisis setiap gambar.
+2. Mengelompokkan gambar yang mirip dengan perceptual hash.
+3. Meranking foto di dalam setiap cluster.
+4. Memilih foto terbaik per cluster.
+5. Mengirim kandidat dekat ke Review sesuai mode.
+6. Menolak duplicate yang kualitasnya jelas lebih rendah.
 
-- `SELECTED`: final score >= 80
-- `REVIEW`: final score >= 50 dan < 80
-- `REJECTED`: final score < 50
+Mode culling:
+
+- `conservative`: lebih banyak kandidat dekat dipertahankan untuk Review.
+- `balanced`: mode default, menjaga satu pemenang dan kandidat yang skornya sangat dekat.
+- `aggressive`: lebih ketat terhadap duplicate alternatif.
+
+Body blur detection bersifat heuristik. Engine memperkirakan ketajaman area subject/body memakai person-region detector opsional bila tersedia; jika tidak tersedia, CullaGrace fallback ke analisis region subjek tengah. Person detection opsional, tidak wajib terpasang, dan fallback heuristic tetap berjalan offline.
 
 ## Batasan Versi 1
 

@@ -9,6 +9,17 @@ def _score(item: PhotoItem) -> float:
     return item.scores.final_score if item.scores else 0.0
 
 
+def _rank_key(item: PhotoItem) -> tuple[float, float, float, float, float]:
+    score = item.score
+    return (
+        score.final_score,
+        score.body.subject_score,
+        1.0 - score.body.body_blur_penalty,
+        score.face.face_score,
+        score.technical.sharpness,
+    )
+
+
 def pick_best_photos_for_cluster(
     cluster: PhotoCluster,
     items_by_id: dict[str, PhotoItem],
@@ -68,7 +79,7 @@ def pick_best_photos(
         photos = cluster.photos
         if not photos:
             continue
-        ranked = sorted(photos, key=lambda photo: photo.score.final_score, reverse=True)
+        ranked = sorted(photos, key=_rank_key, reverse=True)
         best = ranked[0]
         cluster.selected_photo_id = best.id
         cluster.rejected_photo_ids = []
@@ -76,12 +87,18 @@ def pick_best_photos(
 
         for index, photo in enumerate(ranked):
             photo.is_cluster_winner = index == 0
+            score_gap = best.score.final_score - photo.score.final_score
+            photo.score.duplicate_penalty = 0.0 if index == 0 else max(0.0, min(1.0, score_gap))
+            photo.metadata_dict["selected_photo_id"] = best.id
+            photo.metadata_dict["cluster_winner_filename"] = best.file_name
+            photo.metadata_dict["score_gap_from_winner"] = max(0.0, score_gap)
+            photo.metadata_dict["cluster_size"] = len(ranked)
+            photo.metadata_dict.setdefault("mode", mode)
             if index == 0:
                 photo.status = "selected" if photo.score.final_score >= selected_threshold else (
                     "review" if photo.score.final_score >= review_threshold else "rejected"
                 )
             elif is_duplicate_cluster:
-                score_gap = best.score.final_score - photo.score.final_score
                 if mode == "conservative" and index < keep_per_cluster and score_gap <= close_gap:
                     photo.status = "review"
                 elif mode == "balanced" and score_gap <= close_gap:
@@ -97,7 +114,7 @@ def pick_best_photos(
 
             if photo.status == "rejected":
                 cluster.rejected_photo_ids.append(photo.id)
-            photo.score.reasons = build_reasons(photo, cluster)
+            photo.score.reasons = build_reasons(photo, cluster, mode=mode)
             photo.reasons.clear()
             for reason in photo.score.reasons:
                 if photo.status == "selected":
