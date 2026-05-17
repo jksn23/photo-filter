@@ -658,6 +658,26 @@ def render_stat_grid(summary: dict) -> None:
             column.metric(label, value)
 
 
+def render_status_breakdown_tabs(df: pd.DataFrame, display_columns: list[str]) -> None:
+    """Render grouped results for fast selected/review/rejected inspection."""
+    st.markdown("### Breakdown Keputusan")
+    selected_tab, review_tab, rejected_tab = st.tabs(["Selected", "Review", "Rejected"])
+    tab_specs = [
+        (selected_tab, "SELECTED", "Foto prioritas untuk dipakai."),
+        (review_tab, "REVIEW", "Foto yang perlu dicek manual."),
+        (rejected_tab, "REJECTED", "Foto yang tidak direkomendasikan."),
+    ]
+    for tab, status, empty_message in tab_specs:
+        with tab:
+            subset = df[df["output_status"] == status].copy()
+            if subset.empty:
+                st.caption(empty_message)
+                st.dataframe(subset[display_columns], use_container_width=True, hide_index=True)
+                continue
+            st.caption(f"{len(subset)} foto")
+            st.dataframe(subset[display_columns], use_container_width=True, hide_index=True)
+
+
 def render_results() -> None:
     """Render Results tab content."""
     st.subheader("Results")
@@ -736,6 +756,26 @@ def render_results() -> None:
         "final_reason",
     ]
     display_columns = [column for column in display_columns if column in filtered.columns]
+    breakdown_columns = [
+        column
+        for column in [
+            "filename",
+            "final_score",
+            "technical_score",
+            "sharpness_score",
+            "exposure_score",
+            "contrast_score",
+            "face_score",
+            "body_sharpness_score",
+            "body_blur_penalty",
+            "duplicate_group",
+            "is_best_duplicate",
+            "final_reason",
+        ]
+        if column in filtered.columns
+    ]
+    render_status_breakdown_tabs(filtered, breakdown_columns)
+
     view_mode = st.radio("Tampilan", ["Tabel", "Galeri"], horizontal=True)
     if view_mode == "Tabel":
         st.dataframe(filtered[display_columns], use_container_width=True, hide_index=True)

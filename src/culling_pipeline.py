@@ -656,3 +656,108 @@ def run_culling_pipeline(
     _log(log_callback, "Done.")
     _progress(progress_callback, total, total, "Culling selesai.")
     return results, summary
+
+
+def _latest_report(report_dir: Path, pattern: str) -> str | None:
+    matches = sorted(report_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    return str(matches[0]) if matches else None
+
+
+def _core_item_to_result(item) -> PhotoAnalysisResult:
+    score = item.score
+    output_status = item.status.upper()
+    reasons = "; ".join(score.reasons)
+    output_path = getattr(item, "output_path", None)
+    return PhotoAnalysisResult(
+        filename=item.filename or item.file_name,
+        original_path=str(item.path),
+        output_status=output_status,
+        output_path=output_path,
+        blur_score=round(score.sharpness_score * 300.0, 2),
+        is_blur=score.technical.global_blur_penalty > 0.55,
+        brightness_score=None,
+        exposure_status="NORMAL" if score.technical.exposure >= 0.5 else "UNDEREXPOSED_OR_OVEREXPOSED",
+        face_count=score.face.face_count,
+        has_face=score.face.face_detected,
+        duplicate_group_id=item.cluster_id,
+        is_duplicate_candidate=item.cluster_id is not None,
+        best_in_duplicate_group=item.is_cluster_winner,
+        final_score=round(score.final_score * 100.0, 2),
+        notes=reasons,
+        person_count=1 if score.body.person_detected else 0,
+        main_person_blur_score=round(score.body.body_sharpness * 180.0, 2),
+        avg_person_blur_score=None,
+        min_person_blur_score=None,
+        localized_person_blur=score.body.body_blur_penalty >= 0.45,
+        human_quality_score=int(score.final_score * 150),
+        duplicate_quality_rank=None,
+        is_best_duplicate=item.is_cluster_winner,
+        final_reason=reasons,
+        thumbnail_path=item.thumbnail_path,
+        technical_score=score.technical_score,
+        sharpness_score=score.technical.sharpness,
+        exposure_score=score.technical.exposure,
+        contrast_score=score.technical.contrast,
+        blur_penalty=score.technical.global_blur_penalty,
+        face_score=score.face.face_score,
+        body_sharpness_score=score.body.body_sharpness,
+        body_blur_penalty=score.body.body_blur_penalty,
+        aesthetic_score=score.aesthetic_score,
+        culling_mode=str(item.metadata_dict.get("mode", "balanced")),
+    )
+
+
+# Public Streamlit wrapper: keep the old API, but route production work through the new core engine.
+def run_culling_pipeline(
+    input_folder: str,
+    output_folder: str | None,
+    config: dict,
+    progress_callback: ProgressCallback | None = None,
+    log_callback: LogCallback | None = None,
+) -> tuple[list[PhotoAnalysisResult], dict]:
+    """Run CullaGrace culling via the modular core engine and return UI-compatible data."""
+    from src.core.culling.culling_engine import run_culling_engine
+
+    _log(log_callback, "Scanning images...")
+    input_path = normalize_user_path(input_folder)
+    if input_path is None:
+        raise FileNotFoundError("Folder input tidak ditemukan.")
+    image_paths = list_image_files(str(input_path))
+    total = len(image_paths)
+    if total == 0:
+        raise ValueError("Tidak ada file foto JPG, JPEG, atau PNG di folder ini.")
+    _progress(progress_callback, 0, total, "Scanning images...")
+
+    output_path = normalize_user_path(output_folder) if output_folder else Path(default_output_folder(str(input_path)))
+    if output_path is None:
+        output_path = Path(default_output_folder(str(input_path)))
+
+    _log(log_callback, "Generating thumbnails and analyzing scores...")
+    items = run_culling_engine(
+        input_dir=input_path,
+        output_dir=output_path,
+        mode=config.get("culling_mode", "balanced"),
+        recursive=True,
+        copy_files=bool(config.get("copy_files", True)),
+        similarity_threshold=int(config.get("duplicate_hash_threshold", 8)),
+        enable_body_scoring=bool(config.get("use_human_aware_detection", True)),
+    )
+    for index, item in enumerate(items, start=1):
+        item.metadata_dict["mode"] = config.get("culling_mode", "balanced")
+        _progress(progress_callback, index, total, f"Processed {item.file_name} ({index}/{total})")
+
+    results = [_core_item_to_result(item) for item in items]
+    report_dir = output_path / "04_REPORT"
+    csv_report = _latest_report(report_dir, "culling_report_*.csv")
+    json_report = _latest_report(report_dir, "culling_audit_*.json")
+    df = results_to_dataframe(results)
+    summary = generate_summary(df)
+    summary["output_folder"] = str(output_path)
+    summary["report_path"] = csv_report
+    summary["json_report_path"] = json_report
+    summary["total_images"] = total
+    summary["mode"] = config.get("culling_mode", "balanced")
+    summary["cluster_count"] = len({item.cluster_id for item in items if item.cluster_id})
+    _log(log_callback, "Done.")
+    _progress(progress_callback, total, total, "Culling selesai.")
+    return results, summary

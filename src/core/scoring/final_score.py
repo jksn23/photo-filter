@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from src.core.photo.photo_types import CullingMode
+from src.core.photo.photo_types import BodyScore, CullingMode, FaceScore, TechnicalScore
 
 
 @dataclass
@@ -53,3 +53,36 @@ def calculate_final_score(
     )
     return round(max(0.0, min(1.0, score)), 4)
 
+
+def compute_final_score(
+    technical: TechnicalScore,
+    face: FaceScore,
+    body: BodyScore,
+    mode: str = "balanced",
+) -> float:
+    """Compute mode-aware final score from nested score models."""
+    config = MODE_CONFIG.get(mode, MODE_CONFIG["balanced"])
+    face_weight = config.face_score_weight
+    body_weight = config.body_score_weight
+    technical_weight = config.technical_score_weight
+    body_penalty_weight = 0.2
+    blur_penalty_weight = 0.15
+    if mode == "conservative":
+        body_penalty_weight = 0.14
+        blur_penalty_weight = 0.10
+    elif mode == "aggressive":
+        body_penalty_weight = 0.28
+        blur_penalty_weight = 0.22
+
+    score = (
+        0.30 * technical.sharpness
+        + 0.20 * technical.exposure
+        + 0.10 * technical.contrast
+        + face_weight * face.face_score
+        + body_weight * body.subject_score
+        - blur_penalty_weight * technical.global_blur_penalty
+        - body_penalty_weight * body.body_blur_penalty
+    )
+    # Keep configured weights visible to callers while following the requested formula.
+    _ = technical_weight
+    return round(max(0.0, min(1.0, score)), 4)

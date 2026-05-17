@@ -15,8 +15,9 @@ class CullingEngineTests(unittest.TestCase):
             input_dir = root / "input"
             cache_dir = root / "cache"
             input_dir.mkdir()
-            image = np.zeros((96, 96, 3), dtype=np.uint8)
-            cv2.rectangle(image, (20, 20), (76, 76), (255, 255, 255), -1)
+            image = np.full((96, 96, 3), 128, dtype=np.uint8)
+            cv2.putText(image, "CG", (18, 58), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 255), 3)
+            cv2.line(image, (0, 0), (95, 95), (30, 30, 30), 2)
             cv2.imwrite(str(input_dir / "a.jpg"), image)
             cv2.imwrite(str(input_dir / "b.jpg"), image.copy())
 
@@ -30,4 +31,3 @@ class CullingEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

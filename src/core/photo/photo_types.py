@@ -1,10 +1,11 @@
 """Shared data models for the CullaGrace culling pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 
-PhotoStatus = Literal["unprocessed", "selected", "rejected", "manual-selected", "manual-rejected"]
+PhotoStatus = Literal["unprocessed", "selected", "review", "rejected", "manual-selected", "manual-rejected"]
 CullingMode = Literal["conservative", "balanced", "aggressive"]
 ReasonType = Literal["positive", "negative", "neutral"]
 
@@ -29,12 +30,41 @@ class CullingReason:
 
 
 @dataclass
+class TechnicalScore:
+    sharpness: float = 0.0
+    exposure: float = 0.0
+    contrast: float = 0.0
+    global_blur_penalty: float = 0.0
+
+
+@dataclass
+class FaceScore:
+    face_detected: bool = False
+    face_count: int = 0
+    face_sharpness: float = 0.0
+    face_score: float = 0.0
+
+
+@dataclass
+class BodyScore:
+    person_detected: bool = False
+    body_sharpness: float = 0.0
+    body_blur_penalty: float = 0.0
+    subject_score: float = 0.0
+
+
+@dataclass
 class PhotoScore:
-    technical_score: float
-    sharpness_score: float
-    exposure_score: float
-    contrast_score: float
-    blur_penalty: float
+    technical: TechnicalScore = field(default_factory=TechnicalScore)
+    face: FaceScore = field(default_factory=FaceScore)
+    body: BodyScore = field(default_factory=BodyScore)
+    duplicate_penalty: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+    technical_score: float = 0.0
+    sharpness_score: float = 0.0
+    exposure_score: float = 0.0
+    contrast_score: float = 0.0
+    blur_penalty: float = 0.0
     face_score: float | None = None
     face_sharpness: float | None = None
     eye_open_score: float | None = None
@@ -43,12 +73,33 @@ class PhotoScore:
     aesthetic_score: float | None = None
     final_score: float = 0.0
 
+    def __post_init__(self) -> None:
+        if self.technical_score == 0.0 and any(
+            [self.technical.sharpness, self.technical.exposure, self.technical.contrast]
+        ):
+            self.sharpness_score = self.technical.sharpness
+            self.exposure_score = self.technical.exposure
+            self.contrast_score = self.technical.contrast
+            self.blur_penalty = self.technical.global_blur_penalty
+            self.technical_score = (
+                self.technical.sharpness * 0.5 + self.technical.exposure * 0.3 + self.technical.contrast * 0.2
+            )
+        if self.face_score is None:
+            self.face_score = self.face.face_score
+        if self.face_sharpness is None:
+            self.face_sharpness = self.face.face_sharpness
+        if self.body_sharpness_score is None:
+            self.body_sharpness_score = self.body.body_sharpness
+        if self.body_blur_penalty is None:
+            self.body_blur_penalty = self.body.body_blur_penalty
+
 
 @dataclass
 class PhotoItem:
     id: str
-    path: str
+    path: Path | str
     file_name: str
+    filename: str | None = None
     thumbnail_path: str | None = None
     width: int | None = None
     height: int | None = None
@@ -57,13 +108,25 @@ class PhotoItem:
     status: PhotoStatus = "unprocessed"
     cluster_id: str | None = None
     scores: PhotoScore | None = None
+    score: PhotoScore = field(default_factory=PhotoScore)
     reasons: list[CullingReason] = field(default_factory=list)
+    metadata_dict: dict[str, Any] = field(default_factory=dict)
+    is_cluster_winner: bool = False
+
+    def __post_init__(self) -> None:
+        if self.filename is None:
+            self.filename = self.file_name
+        if self.scores is None:
+            self.scores = self.score
+        else:
+            self.score = self.scores
 
 
 @dataclass
 class PhotoCluster:
     id: str
     photo_ids: list[str]
+    photos: list[PhotoItem] = field(default_factory=list)
     selected_photo_id: str | None = None
     rejected_photo_ids: list[str] = field(default_factory=list)
     confidence: float = 0.0
@@ -84,4 +147,3 @@ class CullingResult:
     rejected: list[PhotoItem]
     clusters: list[PhotoCluster]
     summary: CullingSummary
-

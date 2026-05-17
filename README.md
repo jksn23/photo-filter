@@ -11,7 +11,7 @@ Aplikasi berjalan lokal/offline. File asli tidak dihapus dan tidak dipindahkan.
 - Exposure detection berdasarkan brightness rata-rata.
 - Duplicate detection dengan perceptual hash.
 - Face detection offline menggunakan OpenCV Haar Cascade.
-- Human-aware blur detection untuk menilai ketajaman subjek manusia pada foto mirip.
+- Human-aware blur detection berbasis heuristik OpenCV untuk menilai ketajaman area subjek manusia.
 - Technical scoring ternormalisasi: sharpness, exposure, contrast, dan blur penalty.
 - Similarity clustering dan best-photo picker dengan mode conservative, balanced, aggressive.
 - Thumbnail dan analysis cache lokal di `.cullagrace-cache/`.
@@ -73,7 +73,7 @@ Jika file tidak bisa dibaca atau gagal disalin, statusnya dicatat sebagai `ERROR
 - **Underexposed Threshold**: brightness di bawah nilai ini dianggap terlalu gelap. Default 50.
 - **Overexposed Threshold**: brightness di atas nilai ini dianggap terlalu terang. Default 210.
 - **Duplicate Hash Threshold**: nilai lebih kecil berarti pencocokan duplikat lebih ketat. Default 8.
-- **Human-Aware Blur Detection**: memakai YOLO nano jika tersedia untuk mendeteksi tubuh manusia, lalu menilai blur lokal pada subjek.
+- **Human-Aware Blur Detection**: memakai analisis kontur/region OpenCV sebagai heuristik lokal untuk menilai blur pada area subjek manusia.
 - **Mode Culling**: `conservative` menyimpan kandidat dekat, `balanced` adalah default, `aggressive` memilih satu pemenang per grup mirip.
 - **Selected Score Minimum**: skor minimum agar foto masuk Selected. Default 80.
 - **Review Score Minimum**: skor minimum agar foto masuk Review. Default 50.
@@ -102,12 +102,12 @@ Klasifikasi default:
 - Belum melakukan training AI khusus.
 - Belum mendukung penuh file RAW seperti `.cr2`, `.nef`, `.arw`, atau `.dng`.
 - Deteksi wajah memakai OpenCV Haar Cascade, sehingga hasil tetap perlu dicek manual.
-- Person detection memakai Ultralytics YOLO nano. Model pretrained dapat diunduh otomatis saat pertama kali digunakan jika belum tersedia di mesin lokal.
+- Deteksi area tubuh masih heuristik, bukan model AI khusus, sehingga hasil tetap perlu divalidasi pada foto ramai atau pencahayaan ekstrem.
 
 ## Menjalankan Test
 
 ```bash
-python -m unittest discover tests
+python -m pytest -q
 ```
 
 ## Cache dan Audit

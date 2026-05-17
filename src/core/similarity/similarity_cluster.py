@@ -63,3 +63,25 @@ def build_photo_clusters(photo_id_by_path: dict[Path, str], path_groups: dict[st
         )
     return clusters
 
+
+def build_similarity_clusters(photo_items: list, threshold: int = 8) -> list[PhotoCluster]:
+    """Build similarity clusters and assign cluster_id on PhotoItem objects."""
+    paths = [Path(item.path) for item in photo_items]
+    groups = cluster_paths_by_hash(paths, threshold)
+    path_to_item = {Path(item.path): item for item in photo_items}
+    clusters: list[PhotoCluster] = []
+    for cluster_id, group_paths in groups.items():
+        photos = [path_to_item[path] for path in group_paths if path in path_to_item]
+        if not photos:
+            continue
+        for photo in photos:
+            photo.cluster_id = cluster_id
+        clusters.append(
+            PhotoCluster(
+                id=cluster_id,
+                photo_ids=[photo.id for photo in photos],
+                photos=photos,
+                confidence=1.0 if len(photos) > 1 else 0.0,
+            )
+        )
+    return clusters
