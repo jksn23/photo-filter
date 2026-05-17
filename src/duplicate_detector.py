@@ -6,22 +6,33 @@ from PIL import Image, ImageOps
 import imagehash
 
 
-def calculate_image_hash(image_path: str):
+def calculate_phash(image_path: Path) -> imagehash.ImageHash:
     """Calculate a perceptual hash for one image path."""
     with Image.open(image_path) as image:
         image = ImageOps.exif_transpose(image)
         return imagehash.phash(image)
 
 
-def group_duplicates(image_paths: list[str], threshold: int) -> dict[str, str | None]:
-    """Group visually similar images and return path-to-group-id mapping."""
-    normalized_paths = [str(Path(path)) for path in image_paths]
-    result: dict[str, str | None] = {path: None for path in normalized_paths}
+def calculate_image_hash(image_path: str):
+    """Backward-compatible alias for perceptual hash calculation."""
+    return calculate_phash(Path(image_path))
+
+
+def group_duplicates(
+    image_paths: list[Path],
+    hash_threshold: int = 8,
+    threshold: int | None = None,
+) -> dict[str, list[Path]]:
+    """Group visually similar images and return group-id to image paths."""
+    if threshold is not None:
+        hash_threshold = threshold
+
+    normalized_paths = [Path(path) for path in image_paths]
     hashes = {}
 
     for path in normalized_paths:
         try:
-            hashes[path] = calculate_image_hash(path)
+            hashes[path] = calculate_phash(path)
         except Exception:
             continue
 
@@ -43,20 +54,28 @@ def group_duplicates(image_paths: list[str], threshold: int) -> dict[str, str | 
     for index, left in enumerate(paths_with_hashes):
         left_hash = hashes[left]
         for right in paths_with_hashes[index + 1 :]:
-            if left_hash - hashes[right] <= threshold:
+            if left_hash - hashes[right] <= hash_threshold:
                 union(left, right)
 
-    grouped: dict[str, list[str]] = {}
+    grouped: dict[Path, list[Path]] = {}
     for path in paths_with_hashes:
         grouped.setdefault(find(path), []).append(path)
 
-    duplicate_groups = [sorted(paths) for paths in grouped.values() if len(paths) > 1]
-    duplicate_groups.sort(key=lambda paths: paths[0])
+    missing_hash_paths = [path for path in normalized_paths if path not in hashes]
+    all_groups = [sorted(paths, key=lambda item: item.name.lower()) for paths in grouped.values()]
+    all_groups.extend([[path] for path in missing_hash_paths])
+    all_groups.sort(key=lambda paths: paths[0].name.lower())
 
-    for group_index, paths in enumerate(duplicate_groups, start=1):
-        group_id = f"G{group_index:03d}"
+    return {f"G{index:03d}": paths for index, paths in enumerate(all_groups, start=1)}
+
+
+def map_duplicate_groups(image_paths: list[Path], hash_threshold: int = 8) -> dict[str, str | None]:
+    """Return path-to-group-id mapping, only marking groups with duplicates."""
+    grouped = group_duplicates(image_paths, hash_threshold)
+    result: dict[str, str | None] = {str(Path(path)): None for path in image_paths}
+    for group_id, paths in grouped.items():
+        if len(paths) <= 1:
+            continue
         for path in paths:
-            result[path] = group_id
-
+            result[str(path)] = group_id
     return result
-

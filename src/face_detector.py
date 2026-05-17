@@ -1,8 +1,12 @@
 """Offline face detection using OpenCV Haar Cascade."""
 
 from functools import lru_cache
+from pathlib import Path
 
 import cv2
+import numpy as np
+
+from src.image_loader import load_image
 
 
 @lru_cache(maxsize=1)
@@ -14,7 +18,7 @@ def _load_face_cascade():
     return cascade
 
 
-def detect_faces(image) -> int:
+def _count_faces_in_image(image) -> int:
     """Detect frontal faces and return the number found."""
     cascade = _load_face_cascade()
     if cascade is None:
@@ -36,3 +40,17 @@ def detect_faces(image) -> int:
     )
     return int(len(faces))
 
+
+def count_faces(image_path: Path) -> int:
+    """Count faces in an image file using OpenCV Haar Cascade."""
+    image = load_image(str(Path(image_path)))
+    return _count_faces_in_image(image)
+
+
+def detect_faces(image_or_path) -> int:
+    """Backward-compatible face count helper for image arrays or paths."""
+    if isinstance(image_or_path, (str, Path)):
+        return count_faces(Path(image_or_path))
+    if image_or_path is None or not isinstance(image_or_path, np.ndarray):
+        raise ValueError("File foto tidak dapat dibaca.")
+    return _count_faces_in_image(image_or_path)

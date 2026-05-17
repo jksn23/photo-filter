@@ -5,6 +5,8 @@ models/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*.pt
+.cullagrace-cache/
 *$py.class
 
 # C extensions

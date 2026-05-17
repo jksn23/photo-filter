@@ -18,7 +18,7 @@ from src.config import (
     DEFAULT_UNDEREXPOSED_THRESHOLD,
 )
 from src.culling_pipeline import run_culling_pipeline
-from src.file_manager import default_output_folder
+from src.file_manager import default_output_folder, normalize_user_path
 from src.image_loader import list_image_files
 from src.report_generator import results_to_dataframe
 
@@ -288,6 +288,17 @@ def sidebar_controls() -> dict:
         key="output_folder",
         placeholder="Kosongkan untuk membuat folder _CULLED otomatis",
     )
+    try:
+        output_preview = (
+            str(normalize_user_path(output_folder))
+            if output_folder.strip()
+            else default_output_folder(input_folder)
+            if input_folder.strip()
+            else "-"
+        )
+        st.sidebar.caption(f"Hasil akan disimpan di: {output_preview}")
+    except Exception:
+        st.sidebar.caption("Hasil akan disimpan setelah folder input valid.")
 
     st.sidebar.markdown("### Pengaturan Threshold")
     blur_threshold = st.sidebar.number_input(
@@ -324,6 +335,12 @@ def sidebar_controls() -> dict:
     )
 
     st.sidebar.markdown("### Pengaturan Klasifikasi")
+    culling_mode = st.sidebar.selectbox(
+        "Mode Culling",
+        ["conservative", "balanced", "aggressive"],
+        index=1,
+        key="culling_mode",
+    )
     selected_min = st.sidebar.number_input(
         "Selected Score Minimum",
         min_value=0,
@@ -346,6 +363,35 @@ def sidebar_controls() -> dict:
     create_csv = st.sidebar.checkbox("Buat laporan CSV", value=True, key="create_csv")
     use_faces = st.sidebar.checkbox("Gunakan deteksi wajah", value=True, key="use_faces")
     use_duplicates = st.sidebar.checkbox("Gunakan deteksi duplikat", value=True, key="use_duplicates")
+    use_human_aware = st.sidebar.checkbox(
+        "Enable Human-Aware Blur Detection",
+        value=True,
+        key="use_human_aware",
+    )
+    person_confidence = st.sidebar.number_input(
+        "Person Detection Confidence",
+        min_value=0.05,
+        max_value=0.95,
+        value=0.35,
+        step=0.05,
+        key="person_confidence",
+    )
+    person_patch_blur_threshold = st.sidebar.number_input(
+        "Person Patch Blur Threshold",
+        min_value=1.0,
+        max_value=300.0,
+        value=75.0,
+        step=5.0,
+        key="person_patch_blur_threshold",
+    )
+    localized_blur_patch_ratio = st.sidebar.number_input(
+        "Localized Blur Patch Ratio",
+        min_value=0.05,
+        max_value=1.0,
+        value=0.25,
+        step=0.05,
+        key="localized_blur_patch_ratio",
+    )
 
     start_clicked = st.sidebar.button("Mulai Culling", type="primary", use_container_width=True)
     reset_clicked = st.sidebar.button("Reset Pengaturan", use_container_width=True)
@@ -361,6 +407,11 @@ def sidebar_controls() -> dict:
             "create_csv",
             "use_faces",
             "use_duplicates",
+            "use_human_aware",
+            "person_confidence",
+            "person_patch_blur_threshold",
+            "localized_blur_patch_ratio",
+            "culling_mode",
         ]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -374,10 +425,15 @@ def sidebar_controls() -> dict:
         "duplicate_hash_threshold": duplicate_threshold,
         "selected_score_min": selected_min,
         "review_score_min": review_min,
+        "culling_mode": culling_mode,
         "copy_files": copy_files,
         "create_csv": create_csv,
         "use_face_detection": use_faces,
         "use_duplicate_detection": use_duplicates,
+        "use_human_aware_detection": use_human_aware,
+        "person_detection_confidence": person_confidence,
+        "person_patch_blur_threshold": person_patch_blur_threshold,
+        "localized_blur_patch_ratio": localized_blur_patch_ratio,
         "start_clicked": start_clicked,
     }
 
@@ -405,7 +461,9 @@ def get_folder_status(input_folder: str) -> tuple[str, list[str], str]:
     if not input_folder:
         return "warning", [], "Folder input belum dipilih."
 
-    path = Path(input_folder).expanduser()
+    path = normalize_user_path(input_folder)
+    if path is None:
+        return "warning", [], "Folder input belum dipilih."
     if not path.exists() or not path.is_dir():
         return "error", [], "Folder input tidak ditemukan."
 
@@ -443,6 +501,10 @@ def render_dashboard(config: dict) -> None:
             )
 
     st.markdown("### Status Folder Input")
+    st.info(
+        "Sistem sekarang membandingkan foto mirip berdasarkan kualitas subjek manusia. "
+        "Jika ada foto mirip yang lebih bersih dan tubuh manusianya lebih tajam, foto tersebut akan diprioritaskan."
+    )
     status, image_files, message = get_folder_status(config["input_folder"])
     if status == "success":
         st.success(message)
@@ -472,8 +534,12 @@ def render_process_panel(config: dict) -> None:
     st.subheader("Culling Process")
     input_folder = config["input_folder"]
     status, image_files, message = get_folder_status(input_folder)
-    output_display = config["output_folder"].strip() or (
-        default_output_folder(input_folder) if input_folder else "Akan dibuat otomatis setelah folder input valid"
+    output_display = (
+        str(normalize_user_path(config["output_folder"]))
+        if config["output_folder"].strip()
+        else default_output_folder(input_folder)
+        if input_folder
+        else "Akan dibuat otomatis setelah folder input valid"
     )
 
     st.markdown("### Konfirmasi Sebelum Proses")
@@ -534,6 +600,9 @@ def render_process_panel(config: dict) -> None:
             st.session_state.last_report_path = summary.get("report_path", "") or ""
             st.session_state.processing_status = "Completed"
             st.success("Culling selesai. Foto telah dikelompokkan ke folder Selected, Review, dan Rejected.")
+            st.info(f"Folder output: {summary.get('output_folder', '-')}")
+            if summary.get("report_path"):
+                st.info(f"Laporan CSV: {summary.get('report_path')}")
             if int(summary.get("errors", 0)) > 0:
                 st.warning("Beberapa file tidak dapat dibaca atau disalin. Detailnya dicatat dalam laporan.")
         except ValueError as exc:
@@ -581,6 +650,7 @@ def render_stat_grid(summary: dict) -> None:
         ("Underexposed Photos", summary.get("underexposed_photos", 0)),
         ("Overexposed Photos", summary.get("overexposed_photos", 0)),
         ("Duplicate Groups", summary.get("duplicate_groups", 0)),
+        ("Localized Person Blur", summary.get("localized_person_blur_photos", 0)),
     ]
     for row in range(0, len(metrics), 4):
         columns = st.columns(4)
@@ -632,17 +702,40 @@ def render_results() -> None:
     if search:
         filtered = filtered[filtered["filename"].str.contains(search, case=False, na=False)]
 
+    filtered = filtered.copy()
+    if "status" not in filtered.columns and "output_status" in filtered.columns:
+        filtered["status"] = filtered["output_status"]
+    if "duplicate_group" not in filtered.columns and "duplicate_group_id" in filtered.columns:
+        filtered["duplicate_group"] = filtered["duplicate_group_id"]
+    if "blur_level" not in filtered.columns and "is_blur" in filtered.columns:
+        filtered["blur_level"] = filtered["is_blur"].map({True: "Blur", False: "Sharp"})
+
     display_columns = [
         "filename",
-        "output_status",
+        "status",
         "final_score",
+        "human_quality_score",
+        "technical_score",
+        "sharpness_score",
+        "exposure_score",
+        "contrast_score",
+        "blur_penalty",
         "blur_score",
-        "brightness_score",
-        "exposure_status",
+        "blur_level",
+        "person_count",
+        "main_person_blur_score",
+        "body_sharpness_score",
+        "body_blur_penalty",
+        "localized_person_blur",
         "face_count",
-        "duplicate_group_id",
-        "notes",
+        "face_score",
+        "duplicate_group",
+        "duplicate_quality_rank",
+        "is_best_duplicate",
+        "culling_mode",
+        "final_reason",
     ]
+    display_columns = [column for column in display_columns if column in filtered.columns]
     view_mode = st.radio("Tampilan", ["Tabel", "Galeri"], horizontal=True)
     if view_mode == "Tabel":
         st.dataframe(filtered[display_columns], use_container_width=True, hide_index=True)
@@ -654,7 +747,9 @@ def render_results() -> None:
     st.markdown("### Lokasi Output")
     st.write(f"Folder output: `{output_folder}`")
     st.write(f"Laporan CSV: `{report_path or 'Tidak dibuat'}`")
-    c1, c2, c3 = st.columns(3)
+    json_report_path = summary.get("json_report_path", "")
+    st.write(f"Laporan JSON: `{json_report_path or 'Tidak dibuat'}`")
+    c1, c2, c3, c4 = st.columns(4)
     if c1.button("Buka Folder Output", use_container_width=True):
         ok, msg = open_local_path(output_folder)
         st.success(msg) if ok else st.warning(msg)
@@ -668,6 +763,9 @@ def render_results() -> None:
         mime="text/csv",
         use_container_width=True,
     )
+    if c4.button("Buka Laporan JSON", use_container_width=True, disabled=not bool(json_report_path)):
+        ok, msg = open_local_path(json_report_path)
+        st.success(msg) if ok else st.warning(msg)
 
 
 def render_gallery(df: pd.DataFrame) -> None:
