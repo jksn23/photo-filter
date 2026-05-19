@@ -9,9 +9,13 @@ def test_culling_pipeline_wrapper_calls_core_engine(monkeypatch, tmp_path):
     input_dir.mkdir()
     output_dir = tmp_path / "output"
     called = {}
+    progress_messages = []
+    log_messages = []
 
     def fake_engine(**kwargs):
         called.update(kwargs)
+        kwargs["log_callback"]("Fake engine started.")
+        kwargs["progress_callback"](1, 3, "Fake analyzing a.jpg...")
         item = PhotoItem(id="a", path=input_dir / "a.jpg", file_name="a.jpg", cluster_id="CL001", status="selected")
         item.score = PhotoScore(
             technical=TechnicalScore(sharpness=0.8, exposure=0.7, contrast=0.6, global_blur_penalty=0.1),
@@ -30,6 +34,8 @@ def test_culling_pipeline_wrapper_calls_core_engine(monkeypatch, tmp_path):
         str(input_dir),
         str(output_dir),
         {"copy_files": False, "duplicate_hash_threshold": 8, "culling_mode": "balanced"},
+        progress_callback=lambda current, total, message: progress_messages.append((current, total, message)),
+        log_callback=log_messages.append,
     )
 
     assert called["input_dir"] == input_dir
@@ -38,3 +44,7 @@ def test_culling_pipeline_wrapper_calls_core_engine(monkeypatch, tmp_path):
     assert results[0].output_status == "SELECTED"
     assert results[0].body_blur_penalty == 0.1
     assert summary["selected"] == 1
+    assert called["progress_callback"] is not None
+    assert called["log_callback"] is not None
+    assert "Fake engine started." in log_messages
+    assert any(message == "Fake analyzing a.jpg..." for _, _, message in progress_messages)

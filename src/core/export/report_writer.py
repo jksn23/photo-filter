@@ -31,6 +31,17 @@ REPORT_COLUMNS = [
     "subject_score",
     "duplicate_penalty",
     "mode",
+    "performance_mode",
+    "max_analysis_size",
+    "worker_count",
+    "used_cache",
+    "cache_hit",
+    "cache_key",
+    "analysis_size",
+    "face_analysis_enabled",
+    "body_blur_analysis_enabled",
+    "similarity_grouping_enabled",
+    "copy_files_after_culling",
     "reasons",
 ]
 
@@ -60,6 +71,17 @@ def _row(item: PhotoItem) -> dict:
         "subject_score": score.body.subject_score,
         "duplicate_penalty": score.duplicate_penalty,
         "mode": item.metadata_dict.get("mode"),
+        "performance_mode": item.metadata_dict.get("performance_mode"),
+        "max_analysis_size": item.metadata_dict.get("max_analysis_size"),
+        "worker_count": item.metadata_dict.get("worker_count"),
+        "used_cache": item.metadata_dict.get("used_cache"),
+        "cache_hit": item.metadata_dict.get("cache_hit"),
+        "cache_key": item.metadata_dict.get("cache_key"),
+        "analysis_size": item.metadata_dict.get("analysis_size"),
+        "face_analysis_enabled": item.metadata_dict.get("face_analysis_enabled"),
+        "body_blur_analysis_enabled": item.metadata_dict.get("body_blur_analysis_enabled"),
+        "similarity_grouping_enabled": item.metadata_dict.get("similarity_grouping_enabled"),
+        "copy_files_after_culling": item.metadata_dict.get("copy_files_after_culling"),
         "reasons": "; ".join(score.reasons),
     }
 
@@ -149,6 +171,7 @@ def write_json_report(
     output_dir: Path,
     clusters: list[PhotoCluster] | None = None,
     mode: str | None = None,
+    performance: dict | None = None,
 ) -> Path:
     """Write detailed structured JSON report."""
     report_dir = Path(output_dir)
@@ -169,6 +192,7 @@ def write_json_report(
             else 0.0,
             "mode": mode,
         },
+        "performance": performance or {},
         "photos": [_photo_record(item) for item in photo_items],
         "clusters": cluster_records,
     }

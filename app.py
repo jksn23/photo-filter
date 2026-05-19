@@ -30,9 +30,19 @@ from src.core.review.review_session import (
     get_review_progress,
 )
 from src.core.review.review_types import FinalDecision, ReviewItem, ReviewSession
+from src.core.performance.presets import get_performance_preset
 from src.file_manager import default_output_folder, normalize_user_path
 from src.image_loader import list_image_files
 from src.report_generator import results_to_dataframe
+from src.ui.image_viewer import (
+    crop_body_subject_image,
+    crop_original_image,
+    get_display_path,
+    get_image_resolution,
+    get_review_original_path,
+    open_local_file,
+    open_local_folder,
+)
 
 
 APP_NAME = "CullaGrace"
@@ -376,8 +386,63 @@ def sidebar_controls() -> dict:
         key="review_min",
     )
 
+    st.sidebar.markdown("### Performance Settings")
+    performance_mode_label = st.sidebar.selectbox(
+        "Performance Mode",
+        ["Fast", "Balanced", "Accurate"],
+        index=1,
+        key="performance_mode_label",
+        help="Fast lebih cepat, Balanced direkomendasikan, Accurate lebih detail tetapi lebih lambat.",
+    )
+    performance_mode = performance_mode_label.lower()
+    performance_preset = get_performance_preset(performance_mode)
+    st.sidebar.caption(
+        "Original image tetap dipakai untuk detail review dan final export. Analisis rutin memakai resized analysis image."
+    )
+    use_cache = st.sidebar.checkbox("Use cache", value=performance_preset.use_cache, key="use_cache")
+    force_reanalyze = st.sidebar.checkbox("Force reanalyze", value=False, key="force_reanalyze")
+    max_analysis_size = st.sidebar.select_slider(
+        "Max analysis size",
+        options=[768, 1024, 1280, 1600, 2000, 2400],
+        value=performance_preset.max_analysis_size,
+        key="max_analysis_size",
+        help="Longest side untuk resized analysis image. Tidak memakai original size secara default.",
+    )
+    worker_count = st.sidebar.selectbox(
+        "Worker count",
+        ["auto", 1, 2, 3, 4],
+        index=0,
+        key="worker_count",
+        help="Auto dibatasi agar tidak memakai seluruh CPU core.",
+    )
+    enable_face_analysis = st.sidebar.checkbox(
+        "Enable face analysis",
+        value=performance_preset.enable_face_analysis,
+        key="enable_face_analysis",
+    )
+    enable_body_blur_analysis = st.sidebar.checkbox(
+        "Enable body blur analysis",
+        value=performance_preset.enable_body_blur_analysis,
+        key="enable_body_blur_analysis",
+    )
+    enable_similarity_grouping = st.sidebar.checkbox(
+        "Enable similarity grouping",
+        value=performance_preset.enable_similarity_grouping,
+        key="enable_similarity_grouping",
+    )
+    generate_thumbnails = st.sidebar.checkbox(
+        "Generate thumbnails",
+        value=performance_preset.generate_thumbnails,
+        key="generate_thumbnails",
+    )
+    copy_files_after_culling = st.sidebar.checkbox(
+        "Copy files after culling",
+        value=performance_preset.copy_files_after_culling,
+        key="copy_files_after_culling",
+        help="Matikan untuk workflow V2 yang mengekspor Posts/Save/Delete setelah review final.",
+    )
+
     st.sidebar.markdown("### Opsi Proses")
-    copy_files = st.sidebar.checkbox("Salin file ke folder output", value=True, key="copy_files")
     create_csv = st.sidebar.checkbox("Buat laporan CSV", value=True, key="create_csv")
     use_faces = st.sidebar.checkbox("Gunakan deteksi wajah", value=True, key="use_faces")
     use_duplicates = st.sidebar.checkbox("Gunakan deteksi duplikat", value=True, key="use_duplicates")
@@ -428,6 +493,16 @@ def sidebar_controls() -> dict:
             "selected_min",
             "review_min",
             "copy_files",
+            "copy_files_after_culling",
+            "performance_mode_label",
+            "use_cache",
+            "force_reanalyze",
+            "max_analysis_size",
+            "worker_count",
+            "enable_face_analysis",
+            "enable_body_blur_analysis",
+            "enable_similarity_grouping",
+            "generate_thumbnails",
             "create_csv",
             "use_faces",
             "use_duplicates",
@@ -450,8 +525,18 @@ def sidebar_controls() -> dict:
         "duplicate_hash_threshold": duplicate_threshold,
         "selected_score_min": selected_min,
         "review_score_min": review_min,
+        "performance_mode": performance_mode,
+        "use_cache": use_cache,
+        "force_reanalyze": force_reanalyze,
+        "max_analysis_size": max_analysis_size,
+        "worker_count": worker_count,
+        "enable_face_analysis": enable_face_analysis,
+        "enable_body_blur_analysis": enable_body_blur_analysis,
+        "enable_similarity_grouping": enable_similarity_grouping,
+        "generate_thumbnails": generate_thumbnails,
+        "copy_files_after_culling": copy_files_after_culling,
         "culling_mode": culling_mode,
-        "copy_files": copy_files,
+        "copy_files": copy_files_after_culling,
         "create_csv": create_csv,
         "use_face_detection": use_faces,
         "use_duplicate_detection": use_duplicates,
@@ -582,6 +667,11 @@ def render_process_panel(config: dict) -> None:
         st.write(f"Duplicate threshold: **{config['duplicate_hash_threshold']}**")
         st.write(f"Mode culling: **{config['culling_mode']}**")
         st.write(f"Body blur heuristic: **{_format_bool(config['use_human_aware_detection'])}**")
+        st.write(f"Performance mode: **{config['performance_mode']}**")
+        st.write(f"Analysis size: **{config['max_analysis_size']} px**")
+        st.write(f"Workers: **{config['worker_count']}**")
+        st.write(f"Cache: **{_format_bool(config['use_cache'])}**")
+        st.write(f"Copy after culling: **{_format_bool(config['copy_files_after_culling'])}**")
 
     if status != "success":
         if status == "warning":
@@ -600,7 +690,7 @@ def render_process_panel(config: dict) -> None:
 
     def progress_callback(current: int, total: int, message: str) -> None:
         progress_bar.progress(0 if total == 0 else min(current / total, 1.0))
-        status_text.write(message)
+        status_text.write(f"{message} ({current}/{total})")
 
     if config["start_clicked"]:
         if status != "success":
@@ -984,9 +1074,12 @@ def _ai_status_label(status: str) -> str:
 
 
 def _review_image_path(item: ReviewItem, prefer_thumbnail: bool = True) -> Path:
-    if prefer_thumbnail and item.thumbnail_path and item.thumbnail_path.exists():
-        return item.thumbnail_path
-    return item.original_path
+    path, _ = get_display_path(item, prefer_thumbnail=prefer_thumbnail)
+    return path or item.original_path
+
+
+def _review_display_path(item: ReviewItem, prefer_thumbnail: bool = True) -> tuple[Path | None, str]:
+    return get_display_path(item, prefer_thumbnail=prefer_thumbnail)
 
 
 def _apply_review_decision(session: ReviewSession, item: ReviewItem, decision: FinalDecision) -> None:
@@ -1079,9 +1172,10 @@ def render_review_bucket(session: ReviewSession) -> None:
     for item in items[:120]:
         with st.container(border=True):
             preview_col, info_col, action_col = st.columns([1, 2, 2])
-            image_path = _review_image_path(item)
+            image_path, display_mode = _review_display_path(item, prefer_thumbnail=True)
             with preview_col:
-                if image_path.exists():
+                st.caption(f"Viewing: {display_mode}")
+                if image_path and image_path.exists():
                     st.image(str(image_path), use_container_width=True)
                 else:
                     st.caption("Preview tidak tersedia")
@@ -1110,6 +1204,135 @@ def render_review_bucket(session: ReviewSession) -> None:
         st.caption(f"Menampilkan 120 dari {len(items)} foto agar halaman tetap responsif.")
 
 
+def _render_original_open_buttons(item: ReviewItem) -> None:
+    original_path = get_review_original_path(item)
+    file_col, folder_col = st.columns(2)
+    if file_col.button("Open Original File", key=f"open_file_{item.photo_id}", use_container_width=True):
+        ok, msg = open_local_file(original_path)
+        st.success(msg) if ok else st.warning(msg)
+    if folder_col.button("Open Original Folder", key=f"open_folder_{item.photo_id}", use_container_width=True):
+        ok, msg = open_local_folder(original_path)
+        st.success(msg) if ok else st.warning(msg)
+
+
+def _render_sharpness_inspection(item: ReviewItem) -> None:
+    original_path = get_review_original_path(item)
+    if not original_path.exists():
+        st.warning("Original file not found. Crop inspection tidak tersedia.")
+        return
+
+    st.markdown("### Sharpness Inspection")
+    inspection_mode = st.radio(
+        "Inspection Mode",
+        ["Fit View", "Center Crop 100%", "Body/Subject Crop", "Custom Crop"],
+        horizontal=True,
+        key=f"inspection_mode_{item.photo_id}",
+    )
+    crop_size = st.select_slider(
+        "Crop Size",
+        options=[512, 768, 1024],
+        value=768,
+        key=f"inspection_crop_size_{item.photo_id}",
+    )
+
+    if inspection_mode == "Fit View":
+        st.caption("Viewing: Original Image - Fit View")
+        st.image(str(original_path), use_container_width=True)
+        return
+
+    if inspection_mode == "Center Crop 100%":
+        crop = crop_original_image(original_path, crop_size=int(crop_size))
+        st.caption("Viewing: 100% Center Crop from Original")
+    elif inspection_mode == "Body/Subject Crop":
+        crop = crop_body_subject_image(original_path, crop_size=int(crop_size))
+        st.caption("Viewing: Body/Subject Crop from Original")
+    else:
+        slider_col_1, slider_col_2 = st.columns(2)
+        center_x = slider_col_1.slider(
+            "Crop center X %",
+            min_value=0,
+            max_value=100,
+            value=50,
+            key=f"custom_crop_x_{item.photo_id}",
+        )
+        center_y = slider_col_2.slider(
+            "Crop center Y %",
+            min_value=0,
+            max_value=100,
+            value=50,
+            key=f"custom_crop_y_{item.photo_id}",
+        )
+        crop = crop_original_image(
+            original_path,
+            center_x_ratio=center_x / 100.0,
+            center_y_ratio=center_y / 100.0,
+            crop_size=int(crop_size),
+        )
+        st.caption("Viewing: 100% Custom Crop from Original")
+
+    if crop is not None:
+        st.image(crop, use_container_width=False)
+    else:
+        st.warning("Crop inspection tidak tersedia untuk file ini.")
+
+
+def _cluster_preview_image(item: ReviewItem, comparison_mode: str):
+    original_path = get_review_original_path(item)
+    if comparison_mode == "Thumbnail":
+        return (*_review_display_path(item, prefer_thumbnail=True), None)
+    if comparison_mode == "Original Fit":
+        path, label = _review_display_path(item, prefer_thumbnail=False)
+        if label == "Thumbnail Preview Fallback":
+            label = "Original file not found. Showing thumbnail fallback."
+        return path, label, None
+    if not original_path.exists():
+        path, label = _review_display_path(item, prefer_thumbnail=True)
+        return path, "Original file not found. Showing thumbnail fallback.", None
+    if comparison_mode == "Center Crop 100%":
+        return None, "Viewing: 100% Center Crop from Original", crop_original_image(original_path, crop_size=768)
+    return None, "Viewing: Body/Subject Crop from Original", crop_body_subject_image(original_path, crop_size=1024)
+
+
+def _render_cluster_comparison(session: ReviewSession, item: ReviewItem) -> None:
+    if not item.cluster_id:
+        return
+
+    cluster_items = get_cluster_items(session, item.cluster_id)
+    if not cluster_items:
+        return
+
+    st.markdown("### Similar Photos in This Cluster")
+    comparison_mode = st.radio(
+        "Comparison Mode",
+        ["Thumbnail", "Original Fit", "Center Crop 100%", "Body Crop"],
+        horizontal=True,
+        key=f"cluster_mode_{item.photo_id}",
+    )
+    sorted_items = sorted(cluster_items, key=lambda row: (not row.is_cluster_winner, -row.final_score))
+
+    for row_index in range(0, len(sorted_items), 3):
+        columns = st.columns(3)
+        for column, cluster_item in zip(columns, sorted_items[row_index : row_index + 3]):
+            with column:
+                with st.container(border=True):
+                    path, label, crop = _cluster_preview_image(cluster_item, comparison_mode)
+                    st.caption(label)
+                    if crop is not None:
+                        st.image(crop, use_container_width=True)
+                    elif path and path.exists():
+                        st.image(str(path), use_container_width=True)
+                    else:
+                        st.caption("Image preview unavailable.")
+                    st.write(f"**{cluster_item.filename}**")
+                    st.write(f"AI: **{_ai_status_label(cluster_item.ai_status)}**")
+                    st.write(f"Final: **{_decision_label(cluster_item.final_decision)}**")
+                    st.write(f"Final Score: **{_score_label(cluster_item.final_score)}**")
+                    st.write(f"Body Blur Penalty: **{_score_label(cluster_item.body_blur_penalty)}**")
+                    st.write(f"Face Score: **{_score_label(cluster_item.face_score)}**")
+                    st.write(f"Winner: **{_format_bool(cluster_item.is_cluster_winner)}**")
+                    _render_decision_buttons(session, cluster_item, f"cluster_{comparison_mode}_{cluster_item.photo_id}")
+
+
 def render_review_detail(session: ReviewSession) -> None:
     """Render detail view for the active review item."""
     visible_items = _selected_review_items(session)
@@ -1120,20 +1343,30 @@ def render_review_detail(session: ReviewSession) -> None:
 
     st.markdown("### Photo Detail")
     left, right = st.columns([2, 3])
-    image_path = _review_image_path(item, prefer_thumbnail=False)
+    original_path = get_review_original_path(item)
+    image_path, display_mode = _review_display_path(item, prefer_thumbnail=False)
+    resolution = get_image_resolution(original_path)
     with left:
-        if image_path.exists():
+        st.caption(f"Viewing: {display_mode}")
+        if image_path and image_path.exists():
+            if display_mode == "Thumbnail Preview Fallback":
+                st.warning("Original file not found. Showing thumbnail fallback.")
             st.image(str(image_path), use_container_width=True)
-        elif item.thumbnail_path and item.thumbnail_path.exists():
-            st.image(str(item.thumbnail_path), use_container_width=True)
         else:
-            st.caption("Preview tidak tersedia")
+            st.caption("Image preview unavailable.")
     with right:
         st.markdown(f"**{item.filename}**")
         st.write(f"AI Status: **{_ai_status_label(item.ai_status)}**")
         st.write(f"Final Decision: **{_decision_label(item.final_decision)}**")
         st.write(f"Cluster ID: `{item.cluster_id or 'unique'}`")
         st.write(f"Cluster Winner: **{_format_bool(item.is_cluster_winner)}**")
+        if resolution:
+            st.write(f"Original Resolution: **{resolution[0]} x {resolution[1]}**")
+        else:
+            st.write("Original Resolution: **Unavailable**")
+        st.write(f"Displayed Mode: **{display_mode}**")
+        st.write(f"Source Path: `{original_path}`")
+        _render_original_open_buttons(item)
         metric_cols = st.columns(4)
         metric_cols[0].metric("Final", _score_label(item.final_score))
         metric_cols[1].metric("Face", _score_label(item.face_score))
@@ -1159,24 +1392,8 @@ def render_review_detail(session: ReviewSession) -> None:
                 st.session_state.current_photo_id = next_item.photo_id
                 st.rerun()
 
-    if item.cluster_id:
-        cluster_items = get_cluster_items(session, item.cluster_id)
-        st.markdown("### Similar Photos in This Cluster")
-        for cluster_item in sorted(cluster_items, key=lambda row: (not row.is_cluster_winner, -row.final_score)):
-            with st.container(border=True):
-                cols = st.columns([1, 2, 2])
-                cluster_image = _review_image_path(cluster_item)
-                with cols[0]:
-                    if cluster_image.exists():
-                        st.image(str(cluster_image), use_container_width=True)
-                with cols[1]:
-                    st.write(f"**{cluster_item.filename}**")
-                    st.write(f"AI: **{_ai_status_label(cluster_item.ai_status)}**")
-                    st.write(f"Final: **{_decision_label(cluster_item.final_decision)}**")
-                    st.write(f"Score: **{_score_label(cluster_item.final_score)}**")
-                    st.write(f"Winner: **{_format_bool(cluster_item.is_cluster_winner)}**")
-                with cols[2]:
-                    _render_decision_buttons(session, cluster_item, f"cluster_{cluster_item.photo_id}")
+    _render_sharpness_inspection(item)
+    _render_cluster_comparison(session, item)
 
 
 def render_final_export(session: ReviewSession) -> None:

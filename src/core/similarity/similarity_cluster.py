@@ -67,7 +67,38 @@ def build_photo_clusters(photo_id_by_path: dict[Path, str], path_groups: dict[st
 def build_similarity_clusters(photo_items: list, threshold: int = 8) -> list[PhotoCluster]:
     """Build similarity clusters and assign cluster_id on PhotoItem objects."""
     paths = [Path(item.path) for item in photo_items]
-    groups = cluster_paths_by_hash(paths, threshold)
+    cached_hashes = {
+        Path(item.path): str(item.metadata_dict.get("phash"))
+        for item in photo_items
+        if item.metadata_dict.get("phash")
+    }
+    if cached_hashes and len(cached_hashes) == len(paths):
+        parent = {path: path for path in paths}
+
+        def find(path: Path) -> Path:
+            while parent[path] != path:
+                parent[path] = parent[parent[path]]
+                path = parent[path]
+            return path
+
+        def union(left: Path, right: Path) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for index, left in enumerate(paths):
+            for right in paths[index + 1 :]:
+                if hamming_distance(cached_hashes[left], cached_hashes[right]) <= threshold:
+                    union(left, right)
+        grouped: dict[Path, list[Path]] = {}
+        for path in paths:
+            grouped.setdefault(find(path), []).append(path)
+        groups_list = [sorted(group, key=lambda item: item.name.lower()) for group in grouped.values()]
+        groups_list.sort(key=lambda group: group[0].name.lower())
+        groups = {f"CL{index:04d}": group for index, group in enumerate(groups_list, start=1)}
+    else:
+        groups = cluster_paths_by_hash(paths, threshold)
     path_to_item = {Path(item.path): item for item in photo_items}
     clusters: list[PhotoCluster] = []
     for cluster_id, group_paths in groups.items():

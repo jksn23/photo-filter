@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Callable
 
 from src.core.culling.culling_engine import run_culling_engine
+from src.core.performance.performance_config import PerformanceConfig
+from src.core.performance.presets import get_performance_preset
+from src.core.performance.resource_limits import resolve_worker_count
 from src.core.photo.photo_types import PhotoItem
 from src.file_manager import default_output_folder, normalize_user_path
 from src.models import PhotoAnalysisResult
@@ -92,7 +95,7 @@ def run_culling_pipeline(
     log_callback: LogCallback | None = None,
 ) -> tuple[list[PhotoAnalysisResult], dict]:
     """Run the core culling engine and return Streamlit-compatible rows."""
-    _log(log_callback, "Scanning images...")
+    _log(log_callback, "Preparing culling pipeline...")
     input_path = normalize_user_path(input_folder)
     if input_path is None:
         raise FileNotFoundError("Folder input tidak ditemukan.")
@@ -101,23 +104,47 @@ def run_culling_pipeline(
     if output_path is None:
         output_path = Path(default_output_folder(str(input_path)))
 
-    _progress(progress_callback, 0, 1, "Analyzing photos...")
+    _progress(progress_callback, 0, 1, "Preparing culling pipeline...")
     mode = config.get("culling_mode", "balanced")
+    performance_mode = str(config.get("performance_mode", "balanced")).lower()
+    preset = get_performance_preset(performance_mode)
+    performance_config = PerformanceConfig(
+        mode=preset.mode,
+        max_analysis_size=int(config.get("max_analysis_size", preset.max_analysis_size)),
+        worker_count=resolve_worker_count(config.get("worker_count", preset.worker_count), preset.mode),
+        use_cache=bool(config.get("use_cache", preset.use_cache)),
+        enable_face_analysis=bool(config.get("enable_face_analysis", config.get("use_face_detection", preset.enable_face_analysis))),
+        enable_body_blur_analysis=bool(
+            config.get("enable_body_blur_analysis", config.get("use_human_aware_detection", preset.enable_body_blur_analysis))
+        ),
+        enable_similarity_grouping=bool(
+            config.get("enable_similarity_grouping", config.get("use_duplicate_detection", preset.enable_similarity_grouping))
+        ),
+        copy_files_after_culling=bool(config.get("copy_files_after_culling", config.get("copy_files", preset.copy_files_after_culling))),
+        generate_thumbnails=bool(config.get("generate_thumbnails", preset.generate_thumbnails)),
+        force_reanalyze=bool(config.get("force_reanalyze", preset.force_reanalyze)),
+        cache_version=preset.cache_version,
+        scoring_version=preset.scoring_version,
+    )
     items = run_culling_engine(
         input_dir=input_path,
         output_dir=output_path,
         mode=mode,
         recursive=True,
-        copy_files=bool(config.get("copy_files", True)),
+        copy_files=performance_config.copy_files_after_culling,
         similarity_threshold=int(config.get("duplicate_hash_threshold", 8)),
         enable_body_scoring=bool(config.get("use_human_aware_detection", True)),
         enable_person_detection=bool(config.get("enable_person_detection", False)),
+        performance_config=performance_config,
+        progress_callback=progress_callback,
+        log_callback=log_callback,
     )
     total = len(items)
-    for index, item in enumerate(items, start=1):
+    for item in items:
         item.metadata_dict["mode"] = mode
-        _progress(progress_callback, index, total, f"Processed {item.file_name} ({index}/{total})")
 
+    _log(log_callback, "Preparing Streamlit result table...")
+    _progress(progress_callback, total, max(total, 1), "Preparing Streamlit result table...")
     results = [_core_item_to_result(item) for item in items]
     df = results_to_dataframe(results)
     report_dir = output_path / "04_REPORT"
@@ -127,6 +154,11 @@ def run_culling_pipeline(
     summary["json_report_path"] = _latest_report(report_dir, "culling_audit_*.json")
     summary["total_images"] = total
     summary["mode"] = mode
+    summary["performance_mode"] = performance_config.mode
+    summary["max_analysis_size"] = performance_config.max_analysis_size
+    summary["worker_count"] = performance_config.worker_count
+    summary["use_cache"] = performance_config.use_cache
+    summary["copy_files_after_culling"] = performance_config.copy_files_after_culling
     summary["cluster_count"] = int(df["duplicate_group_id"].dropna().nunique()) if not df.empty else 0
     summary["average_final_score"] = round(float(df["final_score"].mean()), 2) if not df.empty else 0.0
     _log(log_callback, "Done.")

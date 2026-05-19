@@ -150,6 +150,57 @@ Output final V2:
 
 Foto `Undecided` tidak diekspor ke folder final secara default, tetapi tetap muncul di report final.
 
+## Full-Resolution Review Viewer
+
+CullaGrace memakai thumbnail untuk browsing cepat di grid/bucket view, tetapi halaman detail review memuat original image untuk inspeksi. Crop inspection dibuat dari original image agar user bisa mengecek ketajaman tanpa bergantung pada preview kecil.
+
+Mode tampilan:
+
+- Grid view memakai `Thumbnail Preview`.
+- Detail view memakai `Original Image`.
+- Sharpness Inspection menyediakan `Original Image - Fit View`, `100% Center Crop from Original`, `Body/Subject Crop from Original`, dan custom crop.
+- Cluster comparison bisa memakai thumbnail, original fit, center crop, atau body crop secara side-by-side.
+
+Catatan: Streamlit dan browser tetap dapat menampilkan gambar original dalam ukuran visual yang disesuaikan container. Karena itu, gunakan crop inspection untuk mengecek blur/sharpness secara lebih serius.
+
+Tombol di detail review:
+
+- `Open Original File`: membuka file asli dengan aplikasi default OS.
+- `Open Original Folder`: membuka folder sumber file asli.
+
+## Performance Modes and Cache
+
+CullaGrace memakai arsitektur performa yang memisahkan thumbnail, resized analysis image, dan original image:
+
+- Thumbnail dipakai untuk grid dan browsing cepat.
+- Resized analysis image dipakai untuk scoring rutin: blur, exposure, face, body blur, dan similarity.
+- Original image hanya dipakai untuk detail review, crop inspection, membuka file/folder, dan final export.
+
+Performance modes:
+
+- `Fast`: paling cepat, memakai analysis image lebih kecil, body blur analysis dimatikan secara default, dan copy Selected/Review/Rejected dimatikan agar cocok untuk folder besar.
+- `Balanced`: default, tradeoff speed/accuracy yang direkomendasikan.
+- `Accurate`: lebih lambat, memakai analysis image lebih besar, tetapi tetap tidak memakai original size secara default.
+
+Cache:
+
+- CullaGrace menyimpan hasil analisis mahal di `.cullagrace_cache/analysis_cache.json` pada folder output.
+- Jika file tidak berubah, run berikutnya memakai cache dan tidak menghitung ulang score.
+- Cache invalid jika path, ukuran file, modified time, performance mode, max analysis size, cache version, atau scoring version berubah.
+- `Force reanalyze` mengabaikan cache untuk run saat ini.
+
+Worker dan memory:
+
+- Worker count bisa `auto`, tetapi dibatasi agar tidak memakai seluruh CPU core.
+- Analisis memakai resized image untuk menurunkan penggunaan RAM.
+- Image array tidak disimpan di `PhotoItem` atau JSON cache.
+
+Copy option:
+
+- `Copy files after culling` bisa dimatikan agar culling lebih cepat.
+- Jika copy off, report dan review session tetap dibuat dari original path.
+- Final `Posts/Save/Delete` tetap bisa diekspor setelah human review.
+
 ## Batasan Versi 2
 
 - Belum melakukan editing foto otomatis.
