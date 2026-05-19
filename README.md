@@ -1,4 +1,4 @@
-# CullaGrace - Church Photo Culling v1
+# CullaGrace - Church Photo Culling v2
 
 CullaGrace adalah aplikasi Streamlit lokal untuk membantu tim multimedia gereja melakukan culling foto dokumentasi secara lebih cepat. Aplikasi menganalisis ketajaman, pencahayaan, kemiripan foto, dan jumlah wajah, lalu menyalin hasil ke folder Selected, Review, dan Rejected.
 
@@ -20,6 +20,7 @@ Aplikasi berjalan lokal/offline. File asli tidak dihapus dan tidak dipindahkan.
 - Menyalin file hasil ke folder output.
 - Membuat laporan CSV untuk audit hasil.
 - UI Bahasa Indonesia dengan panduan threshold.
+- Workflow review final V2: user memberi keputusan Posts, Save, Delete, atau Undecided setelah melihat rekomendasi AI.
 
 ## Instalasi
 
@@ -99,7 +100,57 @@ Mode culling:
 
 Body blur detection bersifat heuristik. Engine memperkirakan ketajaman area subject/body memakai person-region detector opsional bila tersedia; jika tidak tersedia, CullaGrace fallback ke analisis region subjek tengah. Person detection opsional, tidak wajib terpasang, dan fallback heuristic tetap berjalan offline.
 
-## Batasan Versi 1
+## CullaGrace V2 Review Workflow
+
+CullaGrace V2 memisahkan rekomendasi AI dari keputusan final manusia.
+
+AI recommendation buckets:
+
+- `Selected`: AI menilai foto paling layak dipakai.
+- `Review`: AI meminta foto dicek manual.
+- `Rejected`: AI menilai foto kurang layak, tetapi tetap bisa direview.
+
+Final human decisions:
+
+- `Posts`: foto final untuk dipakai atau diposting.
+- `Save`: foto disimpan sebagai arsip atau cadangan.
+- `Delete`: kandidat untuk dihapus setelah dicek manual.
+- `Undecided`: belum ada keputusan final.
+
+Workflow:
+
+1. Jalankan culling seperti biasa.
+2. Buka tab **Final Review**.
+3. Review foto dari bucket Selected, Review, Rejected, atau All Photos.
+4. Lihat score, alasan keputusan AI, dan foto lain dalam cluster yang sama.
+5. Beri keputusan final: Posts, Save, Delete, atau Undecided.
+6. Klik **Export Final** untuk membuat folder keputusan final.
+
+Keamanan:
+
+- Keputusan `Delete` tidak menghapus file asli.
+- CullaGrace tidak memindahkan atau menghapus source photo secara permanen.
+- Keputusan final disimpan sebagai metadata di `reports/final_decisions.json`.
+- Folder final hanya dibuat ketika user menekan **Export Final**.
+- Export final menyalin file ke folder final dan menangani nama file duplikat dengan suffix.
+
+Output final V2:
+
+```text
+<OUTPUT_FOLDER>/
+  02_FINAL_DECISION/
+    Posts/
+    Save/
+    Delete/
+  reports/
+    final_decisions.json
+    final_decision_report.csv
+    final_decision_audit.json
+```
+
+Foto `Undecided` tidak diekspor ke folder final secara default, tetapi tetap muncul di report final.
+
+## Batasan Versi 2
 
 - Belum melakukan editing foto otomatis.
 - Belum melakukan upload otomatis ke media sosial.

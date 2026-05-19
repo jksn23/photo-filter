@@ -1,4 +1,4 @@
-"""Streamlit UI for CullaGrace / Church Photo Culling v1."""
+"""Streamlit UI for CullaGrace / Church Photo Culling v2."""
 
 from pathlib import Path
 import os
@@ -18,13 +18,25 @@ from src.config import (
     DEFAULT_UNDEREXPOSED_THRESHOLD,
 )
 from src.culling_pipeline import run_culling_pipeline
+from src.core.review.decision_exporter import export_final_decisions
+from src.core.review.review_report_writer import write_final_decision_csv, write_final_decision_json
+from src.core.review.review_session import (
+    apply_decision_to_item,
+    build_review_session,
+    get_cluster_items,
+    get_items_by_ai_status,
+    get_next_item,
+    get_previous_item,
+    get_review_progress,
+)
+from src.core.review.review_types import FinalDecision, ReviewItem, ReviewSession
 from src.file_manager import default_output_folder, normalize_user_path
 from src.image_loader import list_image_files
 from src.report_generator import results_to_dataframe
 
 
 APP_NAME = "CullaGrace"
-APP_VERSION = "Church Photo Culling v1"
+APP_VERSION = "Church Photo Culling v2"
 TAGLINE = "Sortir foto pelayanan lebih cepat, rapi, dan bermakna."
 
 
@@ -38,6 +50,12 @@ def init_state() -> None:
         "last_input_folder": "",
         "last_output_folder": "",
         "last_report_path": "",
+        "culling_result": [],
+        "review_session": None,
+        "review_decisions_path": "",
+        "current_review_bucket": "review",
+        "current_photo_id": None,
+        "review_export_summary": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -605,8 +623,17 @@ def render_process_panel(config: dict) -> None:
             st.session_state.last_input_folder = input_folder
             st.session_state.last_output_folder = summary.get("output_folder", "")
             st.session_state.last_report_path = summary.get("report_path", "") or ""
+            st.session_state.culling_result = results
+            decisions_path = _review_decisions_path(st.session_state.last_output_folder)
+            if decisions_path is not None:
+                st.session_state.review_decisions_path = str(decisions_path)
+                st.session_state.review_session = build_review_session(results, decisions_path)
+            st.session_state.current_review_bucket = "review"
+            st.session_state.current_photo_id = None
+            st.session_state.review_export_summary = {}
             st.session_state.processing_status = "Completed"
             st.success("Culling selesai. Foto telah dikelompokkan ke folder Selected, Review, dan Rejected.")
+            st.info("Lanjutkan ke tab Final Review untuk memberi keputusan Posts, Save, Delete, atau Undecided.")
             st.info(f"Folder output: {summary.get('output_folder', '-')}")
             if summary.get("report_path"):
                 st.info(f"Laporan CSV: {summary.get('report_path')}")
@@ -909,6 +936,301 @@ def render_gallery(df: pd.DataFrame) -> None:
         st.caption(f"Menampilkan 60 dari {len(df)} foto sesuai filter agar halaman tetap ringan.")
 
 
+def _review_decisions_path(output_folder: str) -> Path | None:
+    if not output_folder:
+        return None
+    return Path(output_folder) / "reports" / "final_decisions.json"
+
+
+def _ensure_review_session() -> ReviewSession | None:
+    session = st.session_state.get("review_session")
+    if session is not None:
+        return session
+
+    results = st.session_state.get("culling_result", [])
+    output_folder = st.session_state.get("last_output_folder", "")
+    decisions_path = _review_decisions_path(output_folder)
+    if not results or decisions_path is None:
+        return None
+
+    session = build_review_session(results, decisions_path)
+    st.session_state.review_session = session
+    st.session_state.review_decisions_path = str(decisions_path)
+    return session
+
+
+def _set_review_bucket(bucket: str) -> None:
+    st.session_state.current_review_bucket = bucket
+    st.session_state.current_photo_id = None
+
+
+def _score_label(score: float) -> str:
+    value = score * 100.0 if score <= 1.0 else score
+    return f"{value:.1f}%"
+
+
+def _decision_label(decision: str) -> str:
+    labels = {
+        "post": "Posts",
+        "save": "Save",
+        "delete": "Delete",
+        "undecided": "Undecided",
+    }
+    return labels.get(decision, decision.title())
+
+
+def _ai_status_label(status: str) -> str:
+    return status.title()
+
+
+def _review_image_path(item: ReviewItem, prefer_thumbnail: bool = True) -> Path:
+    if prefer_thumbnail and item.thumbnail_path and item.thumbnail_path.exists():
+        return item.thumbnail_path
+    return item.original_path
+
+
+def _apply_review_decision(session: ReviewSession, item: ReviewItem, decision: FinalDecision) -> None:
+    decisions_path = Path(st.session_state.get("review_decisions_path", ""))
+    if not decisions_path:
+        st.warning("Path penyimpanan keputusan belum tersedia.")
+        return
+    apply_decision_to_item(session, item, decision, decisions_path)
+    st.session_state.review_session = session
+    st.success(f"{item.filename} ditandai sebagai {_decision_label(decision)}.")
+    st.rerun()
+
+
+def _render_decision_buttons(session: ReviewSession, item: ReviewItem, key_prefix: str) -> None:
+    post_col, save_col, delete_col, undecided_col = st.columns(4)
+    if post_col.button("Post", key=f"{key_prefix}_post", use_container_width=True):
+        _apply_review_decision(session, item, "post")
+    if save_col.button("Save", key=f"{key_prefix}_save", use_container_width=True):
+        _apply_review_decision(session, item, "save")
+    if delete_col.button("Delete", key=f"{key_prefix}_delete", use_container_width=True):
+        _apply_review_decision(session, item, "delete")
+    if undecided_col.button("Undecided", key=f"{key_prefix}_undecided", use_container_width=True):
+        _apply_review_decision(session, item, "undecided")
+
+
+def _selected_review_items(session: ReviewSession) -> list[ReviewItem]:
+    bucket = st.session_state.get("current_review_bucket", "review")
+    if bucket == "all":
+        return session.items
+    return get_items_by_ai_status(session, bucket)
+
+
+def _find_review_item(session: ReviewSession, photo_id: str | None) -> ReviewItem | None:
+    if not photo_id:
+        return None
+    return next((item for item in session.items if item.photo_id == photo_id), None)
+
+
+def render_review_dashboard(session: ReviewSession) -> None:
+    """Render V2 review progress and AI bucket controls."""
+    progress = get_review_progress(session)
+    decided = progress.total - progress.undecided
+
+    st.markdown("### AI Recommendation")
+    ai_cols = st.columns(3)
+    ai_cols[0].metric("Selected", progress.selected_total)
+    ai_cols[1].metric("Review", progress.review_total)
+    ai_cols[2].metric("Rejected", progress.rejected_total)
+
+    st.markdown("### Final Decision Progress")
+    final_cols = st.columns(4)
+    final_cols[0].metric("Posts", progress.posts)
+    final_cols[1].metric("Save", progress.save)
+    final_cols[2].metric("Delete", progress.delete)
+    final_cols[3].metric("Undecided", progress.undecided)
+    st.progress(0.0 if progress.total == 0 else decided / progress.total)
+    st.caption(f"{decided} dari {progress.total} foto sudah diberi keputusan final.")
+
+    st.info(
+        "Selected, Review, dan Rejected adalah rekomendasi AI. Posts, Save, Delete, dan Undecided adalah keputusan final user."
+    )
+    bucket_cols = st.columns(4)
+    if bucket_cols[0].button("Open Selected", use_container_width=True):
+        _set_review_bucket("selected")
+        st.rerun()
+    if bucket_cols[1].button("Open Review", use_container_width=True):
+        _set_review_bucket("review")
+        st.rerun()
+    if bucket_cols[2].button("Open Rejected", use_container_width=True):
+        _set_review_bucket("rejected")
+        st.rerun()
+    if bucket_cols[3].button("Open All Photos", use_container_width=True):
+        _set_review_bucket("all")
+        st.rerun()
+
+
+def render_review_bucket(session: ReviewSession) -> None:
+    """Render cards for the currently selected AI bucket."""
+    bucket = st.session_state.get("current_review_bucket", "review")
+    items = sorted(_selected_review_items(session), key=lambda item: item.filename.lower())
+    st.markdown(f"### Bucket: {_ai_status_label(bucket) if bucket != 'all' else 'All Photos'}")
+    if not items:
+        st.info("Tidak ada foto pada bucket ini.")
+        return
+
+    detail_id = st.session_state.get("current_photo_id")
+    if detail_id is None:
+        st.session_state.current_photo_id = items[0].photo_id
+
+    for item in items[:120]:
+        with st.container(border=True):
+            preview_col, info_col, action_col = st.columns([1, 2, 2])
+            image_path = _review_image_path(item)
+            with preview_col:
+                if image_path.exists():
+                    st.image(str(image_path), use_container_width=True)
+                else:
+                    st.caption("Preview tidak tersedia")
+            with info_col:
+                st.markdown(f"**{item.filename}**")
+                st.write(f"AI Status: **{_ai_status_label(item.ai_status)}**")
+                st.write(f"Final Decision: **{_decision_label(item.final_decision)}**")
+                st.write(f"Final Score: **{_score_label(item.final_score)}**")
+                st.write(f"Cluster: `{item.cluster_id or 'unique'}`")
+                warnings = []
+                if item.body_blur_penalty >= 0.45:
+                    warnings.append("Body blur penalty tinggi")
+                if item.face_score and item.face_score < 0.35:
+                    warnings.append("Face score rendah")
+                score_percent = item.final_score * 100.0 if item.final_score <= 1.0 else item.final_score
+                if score_percent < 50.0:
+                    warnings.append("Final score rendah")
+                for warning in warnings:
+                    st.warning(warning)
+            with action_col:
+                _render_decision_buttons(session, item, f"bucket_{item.photo_id}")
+                if st.button("Open Detail", key=f"detail_{item.photo_id}", use_container_width=True):
+                    st.session_state.current_photo_id = item.photo_id
+                    st.rerun()
+    if len(items) > 120:
+        st.caption(f"Menampilkan 120 dari {len(items)} foto agar halaman tetap responsif.")
+
+
+def render_review_detail(session: ReviewSession) -> None:
+    """Render detail view for the active review item."""
+    visible_items = _selected_review_items(session)
+    if not visible_items:
+        return
+    item = _find_review_item(session, st.session_state.get("current_photo_id")) or visible_items[0]
+    st.session_state.current_photo_id = item.photo_id
+
+    st.markdown("### Photo Detail")
+    left, right = st.columns([2, 3])
+    image_path = _review_image_path(item, prefer_thumbnail=False)
+    with left:
+        if image_path.exists():
+            st.image(str(image_path), use_container_width=True)
+        elif item.thumbnail_path and item.thumbnail_path.exists():
+            st.image(str(item.thumbnail_path), use_container_width=True)
+        else:
+            st.caption("Preview tidak tersedia")
+    with right:
+        st.markdown(f"**{item.filename}**")
+        st.write(f"AI Status: **{_ai_status_label(item.ai_status)}**")
+        st.write(f"Final Decision: **{_decision_label(item.final_decision)}**")
+        st.write(f"Cluster ID: `{item.cluster_id or 'unique'}`")
+        st.write(f"Cluster Winner: **{_format_bool(item.is_cluster_winner)}**")
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Final", _score_label(item.final_score))
+        metric_cols[1].metric("Face", _score_label(item.face_score))
+        metric_cols[2].metric("Body Sharpness", _score_label(item.body_sharpness))
+        metric_cols[3].metric("Body Penalty", _score_label(item.body_blur_penalty))
+        st.write("Reasons:")
+        if item.reasons:
+            for reason in item.reasons:
+                st.write(f"- {reason}")
+        else:
+            st.caption("Tidak ada alasan detail pada item ini.")
+        _render_decision_buttons(session, item, f"detail_{item.photo_id}")
+
+        nav_left, nav_right = st.columns(2)
+        if nav_left.button("Previous", key=f"prev_{item.photo_id}", use_container_width=True):
+            previous_item = get_previous_item(session, item.photo_id, visible_items)
+            if previous_item:
+                st.session_state.current_photo_id = previous_item.photo_id
+                st.rerun()
+        if nav_right.button("Next", key=f"next_{item.photo_id}", use_container_width=True):
+            next_item = get_next_item(session, item.photo_id, visible_items)
+            if next_item:
+                st.session_state.current_photo_id = next_item.photo_id
+                st.rerun()
+
+    if item.cluster_id:
+        cluster_items = get_cluster_items(session, item.cluster_id)
+        st.markdown("### Similar Photos in This Cluster")
+        for cluster_item in sorted(cluster_items, key=lambda row: (not row.is_cluster_winner, -row.final_score)):
+            with st.container(border=True):
+                cols = st.columns([1, 2, 2])
+                cluster_image = _review_image_path(cluster_item)
+                with cols[0]:
+                    if cluster_image.exists():
+                        st.image(str(cluster_image), use_container_width=True)
+                with cols[1]:
+                    st.write(f"**{cluster_item.filename}**")
+                    st.write(f"AI: **{_ai_status_label(cluster_item.ai_status)}**")
+                    st.write(f"Final: **{_decision_label(cluster_item.final_decision)}**")
+                    st.write(f"Score: **{_score_label(cluster_item.final_score)}**")
+                    st.write(f"Winner: **{_format_bool(cluster_item.is_cluster_winner)}**")
+                with cols[2]:
+                    _render_decision_buttons(session, cluster_item, f"cluster_{cluster_item.photo_id}")
+
+
+def render_final_export(session: ReviewSession) -> None:
+    """Render final export controls and report paths."""
+    st.markdown("### Export Final Decisions")
+    output_folder = st.session_state.get("last_output_folder", "")
+    if not output_folder:
+        st.warning("Folder output belum tersedia.")
+        return
+
+    st.warning("Export menyalin foto ke folder Posts/Save/Delete. File asli tidak dihapus atau dipindahkan.")
+    include_undecided = st.checkbox("Sertakan Undecided pada folder export", value=False)
+    if st.button("Export Final", type="primary", use_container_width=True):
+        output_dir = Path(output_folder)
+        counts = export_final_decisions(session, output_dir, include_undecided=include_undecided)
+        csv_path = write_final_decision_csv(session, output_dir)
+        json_path = write_final_decision_json(session, output_dir)
+        st.session_state.review_export_summary = {
+            "counts": counts,
+            "csv_path": str(csv_path),
+            "json_path": str(json_path),
+            "output_path": str(output_dir / "02_FINAL_DECISION"),
+        }
+        st.success("Export final selesai.")
+
+    export_summary = st.session_state.get("review_export_summary", {})
+    if export_summary:
+        st.write("Counts:", export_summary.get("counts", {}))
+        st.write(f"Folder final: `{export_summary.get('output_path', '-')}`")
+        st.write(f"CSV final: `{export_summary.get('csv_path', '-')}`")
+        st.write(f"JSON audit final: `{export_summary.get('json_path', '-')}`")
+
+
+def render_review_workflow() -> None:
+    """Render CullaGrace V2 human review workflow."""
+    st.subheader("Final Review Workflow")
+    session = _ensure_review_session()
+    if session is None or not session.items:
+        st.info("Jalankan culling terlebih dahulu. Setelah selesai, review workflow akan muncul di sini.")
+        return
+
+    dashboard_tab, bucket_tab, detail_tab, export_tab = st.tabs(
+        ["Review Dashboard", "Bucket View", "Photo Detail", "Final Export"]
+    )
+    with dashboard_tab:
+        render_review_dashboard(session)
+    with bucket_tab:
+        render_review_bucket(session)
+    with detail_tab:
+        render_review_detail(session)
+    with export_tab:
+        render_final_export(session)
+
+
 def render_settings_guide() -> None:
     """Render the settings guide tab."""
     st.subheader("Settings Guide")
@@ -934,6 +1256,11 @@ def render_settings_guide() -> None:
         Review berarti foto perlu dicek manual.
         Rejected berarti foto kemungkinan besar tidak layak.
 
+        ### Panduan Final Review V2
+        Posts, Save, Delete, dan Undecided adalah keputusan final user.
+        Delete hanya berarti kandidat untuk dihapus, bukan penghapusan permanen.
+        Export Final menyalin file ke folder keputusan final tanpa memindahkan file asli.
+
         Aplikasi ini membantu menyaring, bukan menggantikan keputusan akhir manusia.
         """
     )
@@ -952,12 +1279,13 @@ def render_about() -> None:
 
         **Keamanan:** aplikasi tidak menghapus file asli dan tidak memindahkan file sumber.
 
-        **Batasan versi 1:**
+        **Batasan versi 2:**
 
         - Belum melakukan editing otomatis.
         - Belum melakukan upload otomatis ke Facebook.
         - Belum melakukan training AI khusus.
         - Belum mendukung penuh file RAW.
+        - Keyboard shortcut review belum diaktifkan; gunakan tombol UI untuk keputusan final.
         """
     )
 
@@ -981,8 +1309,8 @@ def main() -> None:
     config = sidebar_controls()
     render_header()
 
-    dashboard_tab, process_tab, results_tab, guide_tab, about_tab = st.tabs(
-        ["Dashboard", "Culling Process", "Results", "Settings Guide", "About"]
+    dashboard_tab, process_tab, results_tab, review_tab, guide_tab, about_tab = st.tabs(
+        ["Dashboard", "Culling Process", "Results", "Final Review", "Settings Guide", "About"]
     )
     with dashboard_tab:
         render_dashboard(config)
@@ -990,6 +1318,8 @@ def main() -> None:
         render_process_panel(config)
     with results_tab:
         render_results()
+    with review_tab:
+        render_review_workflow()
     with guide_tab:
         render_settings_guide()
     with about_tab:
